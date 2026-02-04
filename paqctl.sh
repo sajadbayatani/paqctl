@@ -251,6 +251,19 @@ check_dependencies() {
         esac
     fi
 
+    # iptables is required for firewall rules (server mode)
+    if ! command -v iptables &>/dev/null; then
+        log_info "Installing iptables..."
+        case "$PKG_MANAGER" in
+            apt) install_package iptables || log_warn "Could not install iptables - firewall rules may not work" ;;
+            dnf|yum) install_package iptables || log_warn "Could not install iptables" ;;
+            pacman) install_package iptables || log_warn "Could not install iptables" ;;
+            zypper) install_package iptables || log_warn "Could not install iptables" ;;
+            apk) install_package iptables || log_warn "Could not install iptables" ;;
+            *) log_warn "Please install iptables manually for firewall rules to work" ;;
+        esac
+    fi
+
     # libpcap is required by paqet
     install_libpcap
 }
