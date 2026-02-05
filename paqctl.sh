@@ -1932,6 +1932,49 @@ _validate_mac() { [[ "$1" =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; }
 _validate_iface() { [[ "$1" =~ ^[a-zA-Z0-9._-]+$ ]] && [ ${#1} -le 64 ]; }
 # Safe string length check - prevents DoS via extremely long inputs
 _check_length() { [ ${#1} -le "${2:-256}" ]; }
+
+# Network auto-detection
+detect_network() {
+    log_info "Auto-detecting network configuration..."
+
+    # Default interface
+    DETECTED_IFACE=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+    if [ -z "$DETECTED_IFACE" ]; then
+        DETECTED_IFACE=$(ip -o link show 2>/dev/null | awk -F': ' '{gsub(/ /,"",$2); print $2}' | grep -vE '^(lo|docker[0-9]|br-|veth|virbr|tun|tap|wg)' | head -1)
+    fi
+
+    # Local IP
+    if [ -n "$DETECTED_IFACE" ]; then
+        DETECTED_IP=$(ip -4 addr show "$DETECTED_IFACE" 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | grep -o '[0-9.]*' | head -1)
+    fi
+    if [ -z "$DETECTED_IP" ]; then
+        DETECTED_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+        [ -z "$DETECTED_IP" ] && DETECTED_IP=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{gsub(/\/.*/, "", $2); print $2; exit}')
+    fi
+
+    # Gateway IP
+    DETECTED_GATEWAY=$(ip route show default 2>/dev/null | awk '{print $3; exit}')
+
+    # Gateway MAC
+    DETECTED_GW_MAC=""
+    if [ -n "$DETECTED_GATEWAY" ]; then
+        DETECTED_GW_MAC=$(ip neigh show "$DETECTED_GATEWAY" 2>/dev/null | awk '/lladdr/{print $5; exit}')
+        if [ -z "$DETECTED_GW_MAC" ]; then
+            ping -c 1 -W 2 "$DETECTED_GATEWAY" &>/dev/null || true
+            sleep 1
+            DETECTED_GW_MAC=$(ip neigh show "$DETECTED_GATEWAY" 2>/dev/null | awk '/lladdr/{print $5; exit}')
+        fi
+        if [ -z "$DETECTED_GW_MAC" ] && command -v arp &>/dev/null; then
+            DETECTED_GW_MAC=$(arp -n "$DETECTED_GATEWAY" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -1)
+        fi
+    fi
+
+    log_info "Interface: ${DETECTED_IFACE:-unknown}"
+    log_info "Local IP:  ${DETECTED_IP:-unknown}"
+    log_info "Gateway:   ${DETECTED_GATEWAY:-unknown}"
+    log_info "GW MAC:    ${DETECTED_GW_MAC:-unknown}"
+}
+
 _load_settings() {
     [ -f "$INSTALL_DIR/settings.conf" ] || return 0
     # Safe settings loading without eval - uses case statement
