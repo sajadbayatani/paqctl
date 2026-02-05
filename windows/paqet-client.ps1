@@ -59,9 +59,10 @@ $NpcapVersion = "1.80"
 $NpcapUrl = "https://npcap.com/dist/npcap-$NpcapVersion.exe"
 $NpcapInstaller = "$env:TEMP\npcap-$NpcapVersion.exe"
 
-# GFK scripts - bundled locally for faster setup
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$GfkLocalDir = "$ScriptDir\..\gfk\client"
+# GFK scripts - bundled locally for faster setup (only works when running from downloaded repo)
+# When running via "irm | iex", $MyInvocation.MyCommand.Path is null
+$ScriptDir = if ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path } else { $null }
+$GfkLocalDir = if ($ScriptDir) { "$ScriptDir\..\gfk\client" } else { $null }
 $GfkFiles = @("mainclient.py", "quic_client.py", "vio_client.py")  # parameters.py is generated
 
 # Colors
@@ -462,17 +463,27 @@ function Install-Gfk {
         New-Item -ItemType Directory -Path $GfkDir -Force | Out-Null
     }
 
-    # Copy bundled GFK scripts (faster than downloading)
-    Write-Info "Copying GFW-knocker scripts..."
+    # Copy bundled GFK scripts or download from GitHub
+    Write-Info "Setting up GFW-knocker scripts..."
+    $GfkGitHubBase = "https://raw.githubusercontent.com/SamNet-dev/paqctl/main/gfk/client"
     foreach ($file in $GfkFiles) {
-        $src = "$GfkLocalDir\$file"
         $dest = "$GfkDir\$file"
-        if (Test-Path $src) {
+        $src = if ($GfkLocalDir) { "$GfkLocalDir\$file" } else { $null }
+
+        if ($src -and (Test-Path $src)) {
+            # Copy from local bundled files (faster)
             Copy-Item -Path $src -Destination $dest -Force
             Write-Info "  Copied $file"
         } else {
-            Write-Err "Missing bundled file: $src"
-            return $false
+            # Download from GitHub (for one-liner installation)
+            Write-Info "  Downloading $file..."
+            try {
+                Invoke-WebRequest -Uri "$GfkGitHubBase/$file" -OutFile $dest -UseBasicParsing
+                Write-Info "  Downloaded $file"
+            } catch {
+                Write-Err "Failed to download $file from GitHub"
+                return $false
+            }
         }
     }
 
