@@ -6420,15 +6420,15 @@ main() {
     # Step 4: Backend-specific dependencies and download
     log_info "Step 4/7: Setting up ${BACKEND} backend..."
     if [ "$BACKEND" = "gfw-knocker" ]; then
-        install_python_deps
-        download_gfk
-        generate_gfk_certs
+        install_python_deps || { log_error "Failed to install Python dependencies"; exit 1; }
+        download_gfk || { log_error "Failed to download GFK"; exit 1; }
+        generate_gfk_certs || { log_error "Failed to generate certificates"; exit 1; }
         if [ "$ROLE" = "server" ]; then
             # Install Xray to provide SOCKS5 proxy on the target port
-            setup_xray_for_gfk
+            setup_xray_for_gfk || { log_error "Failed to setup Xray"; exit 1; }
         elif [ "$ROLE" = "client" ]; then
-            install_microsocks
-            create_gfk_client_wrapper
+            install_microsocks || { log_error "Failed to install microsocks"; exit 1; }
+            create_gfk_client_wrapper || { log_error "Failed to create client wrapper"; exit 1; }
         fi
         PAQET_VERSION="$GFK_VERSION_PINNED"
         log_info "Using GFK ${PAQET_VERSION} (pinned for stability)"
