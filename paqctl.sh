@@ -976,6 +976,7 @@ GFK_AUTH_CODE="${_safe_auth}"
 GFK_PORT_MAPPINGS="${GFK_PORT_MAPPINGS:-}"
 MICROSOCKS_PORT="${MICROSOCKS_PORT:-}"
 GFK_SERVER_IP="${GFK_SERVER_IP:-}"
+GFK_TCP_FLAGS="${GFK_TCP_FLAGS:-AP}"
 TELEGRAM_BOT_TOKEN="${_tg_token}"
 TELEGRAM_CHAT_ID="${_tg_chat}"
 TELEGRAM_INTERVAL=${_tg_interval}
@@ -1536,6 +1537,8 @@ quic_max_stream_data = 1073741824
 quic_auth_code = "${safe_auth_code}"
 
 quic_cert_filepath = ("${safe_gfk_dir}/cert.pem", "${safe_gfk_dir}/key.pem")
+
+tcp_flags = "${GFK_TCP_FLAGS:-AP}"
 PYEOF
     )
     if ! mv "$_tmp" "$GFK_DIR/parameters.py"; then
@@ -1957,6 +1960,7 @@ _load_settings() {
             GFK_PORT_MAPPINGS) GFK_PORT_MAPPINGS="$value" ;;
             MICROSOCKS_PORT) [[ "$value" =~ ^[0-9]*$ ]] && MICROSOCKS_PORT="$value" ;;
             GFK_SERVER_IP) GFK_SERVER_IP="$value" ;;
+            GFK_TCP_FLAGS) [[ "$value" =~ ^[FSRPAUEC]+$ ]] && GFK_TCP_FLAGS="$value" ;;
             TELEGRAM_BOT_TOKEN) TELEGRAM_BOT_TOKEN="$value" ;;
             TELEGRAM_CHAT_ID) TELEGRAM_CHAT_ID="$value" ;;
             TELEGRAM_INTERVAL) [[ "$value" =~ ^[0-9]+$ ]] && TELEGRAM_INTERVAL="$value" ;;
@@ -1997,6 +2001,7 @@ GFK_AUTH_CODE=${GFK_AUTH_CODE:-}
 GFK_PORT_MAPPINGS=${GFK_PORT_MAPPINGS:-}
 MICROSOCKS_PORT=${MICROSOCKS_PORT:-}
 GFK_SERVER_IP=${GFK_SERVER_IP:-}
+GFK_TCP_FLAGS=${GFK_TCP_FLAGS:-AP}
 
 # Ensure root
 if [ "$EUID" -ne 0 ]; then
@@ -2101,6 +2106,7 @@ GFK_AUTH_CODE="${_safe_auth}"
 GFK_PORT_MAPPINGS="${GFK_PORT_MAPPINGS:-}"
 MICROSOCKS_PORT="${MICROSOCKS_PORT:-}"
 GFK_SERVER_IP="${GFK_SERVER_IP:-}"
+GFK_TCP_FLAGS="${GFK_TCP_FLAGS:-AP}"
 TELEGRAM_BOT_TOKEN="${_tg_token}"
 TELEGRAM_CHAT_ID="${_tg_chat}"
 TELEGRAM_INTERVAL=${_tg_interval}
@@ -2357,6 +2363,7 @@ quic_max_data = 1073741824
 quic_max_stream_data = 1073741824
 quic_auth_code = "${safe_auth}"
 quic_cert_filepath = ("${safe_dir}/cert.pem", "${safe_dir}/key.pem")
+tcp_flags = "${GFK_TCP_FLAGS:-AP}"
 PYEOF
     )
     mv "$_tmp" "$GFK_DIR/parameters.py" || { rm -f "$_tmp"; return 1; }
@@ -3959,6 +3966,15 @@ _change_config_gfk() {
         echo -e "${BOLD}Port mappings${NC} [${GFK_PORT_MAPPINGS:-14000:443}]:"
         read -p "  Mappings: " input < /dev/tty || true
         [ -n "$input" ] && GFK_PORT_MAPPINGS="$input"
+
+        echo -e "${BOLD}Outgoing TCP flags${NC} [${GFK_TCP_FLAGS:-AP}]:"
+        echo -e "  ${DIM}Controls TCP flags on outgoing violated packets (default: AP)${NC}"
+        echo -e "  ${DIM}Valid flags: S(SYN) A(ACK) P(PSH) R(RST) F(FIN) U(URG)${NC}"
+        read -p "  Flags: " input < /dev/tty || true
+        if [ -n "$input" ] && ! [[ "$input" =~ ^[FSRPAUEC]+$ ]]; then
+            log_error "Invalid flags. Use uppercase letters only: F, S, R, P, A, U, E, C"; return 1
+        fi
+        [ -n "$input" ] && GFK_TCP_FLAGS="$input"
     else
         echo -e "${BOLD}Server IP${NC} [${GFK_SERVER_IP}]:"
         read -p "  IP: " input < /dev/tty || true
@@ -4002,6 +4018,15 @@ _change_config_gfk() {
         echo -e "${BOLD}Port mappings${NC} [${GFK_PORT_MAPPINGS:-14000:443}]:"
         read -p "  Mappings: " input < /dev/tty || true
         [ -n "$input" ] && GFK_PORT_MAPPINGS="$input"
+
+        echo -e "${BOLD}Outgoing TCP flags${NC} [${GFK_TCP_FLAGS:-AP}]:"
+        echo -e "  ${DIM}Controls TCP flags on outgoing violated packets (default: AP)${NC}"
+        echo -e "  ${DIM}Valid flags: S(SYN) A(ACK) P(PSH) R(RST) F(FIN) U(URG)${NC}"
+        read -p "  Flags: " input < /dev/tty || true
+        if [ -n "$input" ] && ! [[ "$input" =~ ^[FSRPAUEC]+$ ]]; then
+            log_error "Invalid flags. Use uppercase letters only: F, S, R, P, A, U, E, C"; return 1
+        fi
+        [ -n "$input" ] && GFK_TCP_FLAGS="$input"
 
         echo -e "${BOLD}SOCKS5 port${NC} [${MICROSOCKS_PORT:-1080}]:"
         read -p "  Port: " input < /dev/tty || true
@@ -4261,6 +4286,7 @@ GFK_AUTH_CODE="${GFK_AUTH_CODE:-}"
 GFK_PORT_MAPPINGS="${GFK_PORT_MAPPINGS:-}"
 MICROSOCKS_PORT="${MICROSOCKS_PORT:-}"
 GFK_SERVER_IP="${GFK_SERVER_IP:-}"
+GFK_TCP_FLAGS="${GFK_TCP_FLAGS:-AP}"
 TELEGRAM_BOT_TOKEN="${_tg_token}"
 TELEGRAM_CHAT_ID="${_tg_chat}"
 TELEGRAM_INTERVAL=${_tg_interval}
@@ -6360,6 +6386,7 @@ _load_settings() {
             GFK_PORT_MAPPINGS) GFK_PORT_MAPPINGS="$value" ;;
             MICROSOCKS_PORT) [[ "$value" =~ ^[0-9]*$ ]] && MICROSOCKS_PORT="$value" ;;
             GFK_SERVER_IP) GFK_SERVER_IP="$value" ;;
+            GFK_TCP_FLAGS) [[ "$value" =~ ^[FSRPAUEC]+$ ]] && GFK_TCP_FLAGS="$value" ;;
             TELEGRAM_BOT_TOKEN) TELEGRAM_BOT_TOKEN="$value" ;;
             TELEGRAM_CHAT_ID) TELEGRAM_CHAT_ID="$value" ;;
             TELEGRAM_INTERVAL) [[ "$value" =~ ^[0-9]+$ ]] && TELEGRAM_INTERVAL="$value" ;;

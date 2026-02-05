@@ -13,6 +13,7 @@ vio_tcp_client_port = parameters.vio_tcp_client_port
 vio_udp_client_port = parameters.vio_udp_client_port
 quic_local_ip = parameters.quic_local_ip
 quic_client_port = parameters.quic_client_port
+tcp_flags = getattr(parameters, 'tcp_flags', 'AP')
 
 # Windows-specific: get local IP and gateway MAC for Ethernet frames
 my_ip = getattr(parameters, 'my_ip', None)
@@ -73,11 +74,11 @@ async def forward_vio_to_quic(qu1, transport):
 # Build base packet based on OS
 if is_windows and gateway_mac and my_ip and local_mac:
     logger.info(f"Windows mode: using Ethernet frames (gw_mac={gateway_mac}, my_ip={my_ip})")
-    basepkt = Ether(dst=gateway_mac, src=local_mac) / IP(src=my_ip, dst=vps_ip) / TCP(sport=vio_tcp_client_port, dport=vio_tcp_server_port, seq=0, flags="AP", ack=0, options=tcp_options) / Raw(load=b"")
+    basepkt = Ether(dst=gateway_mac, src=local_mac) / IP(src=my_ip, dst=vps_ip) / TCP(sport=vio_tcp_client_port, dport=vio_tcp_server_port, seq=0, flags=tcp_flags, ack=0, options=tcp_options) / Raw(load=b"")
     skt = conf.L2socket(iface=conf.iface)
 else:
     logger.info(f"Linux mode: using L3 socket")
-    basepkt = IP(dst=vps_ip) / TCP(sport=vio_tcp_client_port, dport=vio_tcp_server_port, seq=0, flags="AP", ack=0, options=tcp_options) / Raw(load=b"")
+    basepkt = IP(dst=vps_ip) / TCP(sport=vio_tcp_client_port, dport=vio_tcp_server_port, seq=0, flags=tcp_flags, ack=0, options=tcp_options) / Raw(load=b"")
     skt = conf.L3socket()
 
 

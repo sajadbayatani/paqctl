@@ -18,6 +18,7 @@ vio_tcp_server_port = parameters.vio_tcp_server_port
 vio_udp_server_port = parameters.vio_udp_server_port
 quic_local_ip = parameters.quic_local_ip
 quic_server_port = parameters.quic_server_port
+tcp_flags = getattr(parameters, 'tcp_flags', 'AP')
 
 
 
@@ -89,7 +90,7 @@ async def forward_vio_to_quic(qu1, transport):
 
 
 
-basepkt = IP() / TCP(sport=vio_tcp_server_port, seq=1, flags="AP", ack=0, options=tcp_options) / Raw(load=b"")
+basepkt = IP() / TCP(sport=vio_tcp_server_port, seq=1, flags=tcp_flags, ack=0, options=tcp_options) / Raw(load=b"")
 
 skt = conf.L3socket()
 
