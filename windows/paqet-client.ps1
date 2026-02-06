@@ -19,7 +19,7 @@
     ─────────────────────────────────────────────
     • Uses "violated TCP" packets + QUIC tunnel to evade deep packet inspection
     • More complex but better at evading sophisticated firewalls (like GFW)
-    • Works on: Windows (with Npcap + Python)
+    • Works on: Windows (with Npcap + Go)
     • Requires: Xray running on server port 443
     • Proxy: 127.0.0.1:14000 (forwards to server's Xray SOCKS5)
 
@@ -34,7 +34,7 @@
     Requirements:
     • Administrator privileges (for raw socket access)
     • Npcap (https://npcap.com) - auto-installed if missing
-    • Python 3.10+ (GFK only) - auto-installed if missing
+    • Go toolchain (GFK only) - install if missing
 #>
 
 param(
@@ -51,6 +51,11 @@ $InstallDir = "C:\paqet"
 $PaqetExe = "$InstallDir\paqet_windows_amd64.exe"
 $PaqetVersion = "v1.0.0-alpha.14"   # Pinned paqet version
 $GfkDir = "$InstallDir\gfk"
+$GfkGoDir = "$GfkDir\go"
+$GfkClientExe = "$GfkDir\gfk-client.exe"
+$GfkVersion = "v1.0.0"
+$GfkReleaseBase = "https://github.com/SamNet-dev/paqctl/releases/download/$GfkVersion"
+$GfkClientUrl = "$GfkReleaseBase/gfk-client-windows-amd64.exe"
 $ConfigFile = "$InstallDir\config.yaml"
 $SettingsFile = "$InstallDir\settings.conf"
 
@@ -59,11 +64,21 @@ $NpcapVersion = "1.80"
 $NpcapUrl = "https://npcap.com/dist/npcap-$NpcapVersion.exe"
 $NpcapInstaller = "$env:TEMP\npcap-$NpcapVersion.exe"
 
-# GFK scripts - bundled locally for faster setup (only works when running from downloaded repo)
+# GFK Go sources - bundled locally for faster setup (only works when running from downloaded repo)
 # When running via "irm | iex", $MyInvocation.MyCommand.Path is null
 $ScriptDir = if ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path } else { $null }
-$GfkLocalDir = if ($ScriptDir) { "$ScriptDir\..\gfk\client" } else { $null }
-$GfkFiles = @("mainclient.py", "quic_client.py", "vio_client.py")  # parameters.py is generated
+$GfkLocalDir = if ($ScriptDir) { "$ScriptDir\..\gfk\go" } else { $null }
+$GfkGoFiles = @(
+    "go.mod",
+    "cmd\gfk-client\main.go",
+    "internal\config\config.go",
+    "internal\gfk\protocol.go",
+    "internal\gfk\util.go",
+    "internal\gfk\sender_unix.go",
+    "internal\gfk\sender_windows.go",
+    "internal\gfk\vio.go",
+    "internal\gfk\quic.go"
+)
 
 # Colors
 function Write-Info { Write-Host "[INFO] $args" -ForegroundColor Cyan }
@@ -84,7 +99,7 @@ function Test-ValidMAC {
 
 function Test-SafeString {
     param([string]$s)
-    # Block characters that could break Python string literals
+    # Block characters that could break JSON string literals
     if ($s.Contains('"') -or $s.Contains("'") -or $s.Contains('\') -or $s.Contains([char]10) -or $s.Contains([char]13)) {
         return $false
     }
@@ -107,10 +122,10 @@ function Test-Npcap {
     return (Test-Path $npcapPath) -or (Test-Path $wpcapDll)
 }
 
-function Test-Python {
+function Test-Go {
     try {
-        $version = & python --version 2>&1
-        return $version -match "Python 3\."
+        $version = & go version 2>&1
+        return $version -match "go"
     } catch {
         return $false
     }
@@ -161,50 +176,79 @@ function Install-NpcapIfMissing {
     }
 }
 
-function Install-PythonIfMissing {
-    if (Test-Python) { return $true }
+function Install-GoIfMissing {
+    if (Test-Go) { return $true }
 
     Write-Host ""
     Write-Host "===============================================" -ForegroundColor Red
-    Write-Host "  PYTHON 3 REQUIRED" -ForegroundColor Red
+    Write-Host "  GO TOOLCHAIN REQUIRED" -ForegroundColor Red
     Write-Host "===============================================" -ForegroundColor Red
     Write-Host ""
-    Write-Host "  GFW-knocker requires Python 3.x"
+    Write-Host "  GFW-knocker now requires Go to build the client binary."
     Write-Host ""
-    Write-Host "  Please install Python from:" -ForegroundColor Yellow
-    Write-Host "  https://www.python.org/downloads/" -ForegroundColor Yellow
+    Write-Host "  Please install Go from:" -ForegroundColor Yellow
+    Write-Host "  https://go.dev/dl/" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "  IMPORTANT: Check 'Add Python to PATH' during install!" -ForegroundColor Yellow
+    Write-Host "  IMPORTANT: Ensure Go is added to PATH." -ForegroundColor Yellow
     Write-Host ""
 
-    $choice = Read-Host "  Open Python download page? [Y/n]"
+    $choice = Read-Host "  Open Go download page? [Y/n]"
     if ($choice -notmatch "^[Nn]") {
-        Start-Process "https://www.python.org/downloads/"
+        Start-Process "https://go.dev/dl/"
     }
 
-    Read-Host "  Press Enter after installing Python"
+    Read-Host "  Press Enter after installing Go"
 
-    if (Test-Python) {
-        Write-Success "Python detected!"
+    if (Test-Go) {
+        Write-Success "Go detected!"
         return $true
     } else {
-        Write-Err "Python not found. Please restart PowerShell after installing."
+        Write-Err "Go not found. Please restart PowerShell after installing."
         return $false
     }
 }
 
-function Install-PythonPackages {
-    Write-Info "Installing Python packages (scapy, aioquic)..."
-    try {
-        & python -m pip install --quiet --upgrade pip 2>&1 | Out-Null
-        & python -m pip install --quiet scapy aioquic 2>&1 | Out-Null
-        Write-Success "Python packages installed"
-        return $true
-    } catch {
-        Write-Err "Failed to install Python packages: $_"
-        Write-Info "Try manually: pip install scapy aioquic"
+function Build-GfkClient {
+    if (-not (Test-Go)) {
+        Write-Err "Go not found. Please install Go first."
         return $false
     }
+    if (-not (Test-Path $GfkGoDir)) {
+        Write-Err "GFK Go sources not found in $GfkGoDir"
+        return $false
+    }
+    Write-Info "Building GFW-knocker client (Go)..."
+    try {
+        Push-Location $GfkGoDir
+        & go mod download 2>&1 | Out-Null
+        & go build -o $GfkClientExe ".\cmd\gfk-client" 2>&1 | Out-Null
+        Pop-Location
+        if (Test-Path $GfkClientExe) {
+            Write-Success "GFW-knocker client built"
+            return $true
+        } else {
+            Write-Err "GFW-knocker build failed"
+            return $false
+        }
+    } catch {
+        Pop-Location
+        Write-Err "Failed to build GFW-knocker: $_"
+        return $false
+    }
+}
+
+function Download-GfkClientBinary {
+    Write-Info "Downloading GFW-knocker client binary..."
+    try {
+        Invoke-WebRequest -Uri $GfkClientUrl -OutFile $GfkClientExe -UseBasicParsing
+        if (Test-Path $GfkClientExe) {
+            Write-Success "GFW-knocker client downloaded"
+            return $true
+        }
+    } catch {
+        Write-Warn "Failed to download GFW-knocker binary: $_"
+    }
+    return $false
 }
 
 #═══════════════════════════════════════════════════════════════════════
@@ -239,6 +283,7 @@ function Get-NetworkInfo {
 
     $gatewayIP = if ($gateway) { $gateway.NextHop } else { $null }
     $gatewayMAC = $null
+    $localMAC = $adapter.MacAddress -replace "-", ":"
 
     if ($gatewayIP) {
         $null = Test-Connection -ComputerName $gatewayIP -Count 1 -ErrorAction SilentlyContinue
@@ -254,6 +299,7 @@ function Get-NetworkInfo {
         IP = $ipConfig.IPAddress
         GatewayIP = $gatewayIP
         GatewayMAC = $gatewayMAC
+        LocalMAC = $localMAC
     }
 }
 
@@ -271,7 +317,7 @@ function Get-InstalledBackend {
         }
     }
     if (Test-Path $PaqetExe) { return "paqet" }
-    if (Test-Path "$GfkDir\mainclient.py") { return "gfk" }
+    if (Test-Path $GfkClientExe) { return "gfk" }
     return $null
 }
 
@@ -464,9 +510,9 @@ function Install-Gfk {
     Write-Host ""
     Write-Host "  What will be installed:" -ForegroundColor Yellow
     Write-Host "    1. Npcap (for raw socket access)"
-    Write-Host "    2. Python 3.10+ (for QUIC protocol)"
-    Write-Host "    3. Python packages: scapy, aioquic"
-    Write-Host "    4. GFK client scripts"
+    Write-Host "    2. Go toolchain (builds client binary)"
+    Write-Host "    3. GFK Go sources"
+    Write-Host "    4. GFK client binary"
     Write-Host ""
     Write-Host "  IMPORTANT: Your server must have Xray running on port 443." -ForegroundColor Cyan
     Write-Host "  GFK is just a tunnel - Xray provides the actual SOCKS5 proxy."
@@ -476,20 +522,33 @@ function Install-Gfk {
 
     # Check prerequisites
     if (-not (Install-NpcapIfMissing)) { return $false }
-    if (-not (Install-PythonIfMissing)) { return $false }
-    if (-not (Install-PythonPackages)) { return $false }
 
     # Create directories
     if (-not (Test-Path $GfkDir)) {
         New-Item -ItemType Directory -Path $GfkDir -Force | Out-Null
     }
+    if (-not (Test-Path $GfkGoDir)) {
+        New-Item -ItemType Directory -Path $GfkGoDir -Force | Out-Null
+    }
 
-    # Copy bundled GFK scripts or download from GitHub
-    Write-Info "Setting up GFW-knocker scripts..."
-    $GfkGitHubBase = "https://raw.githubusercontent.com/SamNet-dev/paqctl/main/gfk/client"
-    foreach ($file in $GfkFiles) {
-        $dest = "$GfkDir\$file"
-        $src = if ($GfkLocalDir) { "$GfkLocalDir\$file" } else { $null }
+    if (Download-GfkClientBinary) {
+        Write-Success "GFW-knocker binary installed"
+        Save-Settings -Backend "gfk"
+        return $true
+    }
+
+    if (-not (Install-GoIfMissing)) { return $false }
+
+    # Copy bundled GFK Go sources or download from GitHub
+    Write-Info "Setting up GFW-knocker sources..."
+    $GfkGitHubBase = "https://raw.githubusercontent.com/SamNet-dev/paqctl/main/gfk/go"
+    foreach ($file in $GfkGoFiles) {
+        $dest = Join-Path $GfkGoDir $file
+        $src = if ($GfkLocalDir) { Join-Path $GfkLocalDir $file } else { $null }
+        $destDir = Split-Path -Parent $dest
+        if (-not (Test-Path $destDir)) {
+            New-Item -ItemType Directory -Path $destDir -Force | Out-Null
+        }
 
         if ($src -and (Test-Path $src)) {
             # Copy from local bundled files (faster)
@@ -507,6 +566,8 @@ function Install-Gfk {
             }
         }
     }
+
+    if (-not (Build-GfkClient)) { return $false }
 
     Write-Success "GFW-knocker installed to $GfkDir"
     Save-Settings -Backend "gfk"
@@ -558,52 +619,40 @@ function New-GfkConfig {
         return $false
     }
 
-    # Create parameters.py for GFK (matching expected variable names)
-    $params = @"
-# GFW-knocker client configuration (auto-generated)
-from scapy.all import conf
-
-# Network interface for scapy (Windows Npcap)
-conf.iface = r"\Device\NPF_$($net.Guid)"
-my_ip = "$($net.IP)"
-gateway_mac = "$($net.GatewayMAC)"
-
-# Server settings
-vps_ip = "$ServerIP"
-xray_server_ip = "127.0.0.1"
-
-# Port mappings (local_port: remote_port)
-tcp_port_mapping = {14000: 443}
-udp_port_mapping = {}
-
-# VIO (raw socket) ports
-vio_tcp_server_port = 45000
-vio_tcp_client_port = 40000
-vio_udp_server_port = 35000
-vio_udp_client_port = 30000
-
-# QUIC tunnel ports
-quic_server_port = 25000
-quic_client_port = 20000
-quic_local_ip = "127.0.0.1"
-
-# QUIC settings
-quic_verify_cert = False
-quic_idle_timeout = 86400
-udp_timeout = 300
-quic_mtu = 1420
-quic_max_data = 1073741824
-quic_max_stream_data = 1073741824
-quic_auth_code = "$AuthCode"
-quic_certificate = "cert.pem"
-quic_private_key = "key.pem"
-
-# TCP flags for violated packets (default: AP = ACK+PSH)
-tcp_flags = "$TcpFlags"
-
-# SOCKS proxy
-socks_port = $SocksPort
-"@
+    # Create gfk.json for GFK (matching Go config schema)
+    $guidEscaped = "\\Device\\NPF_$($net.Guid)"
+    $localMAC = ($net.LocalMAC -replace "-", ":")
+    $config = @{
+        vps_ip = $ServerIP
+        xray_server_ip_address = "127.0.0.1"
+        tcp_port_mapping = @{ "$SocksPort" = 443 }
+        udp_port_mapping = @{}
+        vio = @{
+            tcp_server_port = 45000
+            tcp_client_port = 40000
+            udp_server_port = 35000
+            udp_client_port = 30000
+            tcp_flags = $TcpFlags
+            iface = $guidEscaped
+            my_ip = $net.IP
+            gateway_mac = $net.GatewayMAC
+            local_mac = $localMAC
+        }
+        quic = @{
+            server_port = 25000
+            client_port = 20000
+            local_ip = "127.0.0.1"
+            idle_timeout = 86400
+            udp_timeout = 300
+            mtu = 1420
+            verify_cert = $false
+            max_data = 1073741824
+            max_stream_data = 1073741824
+            auth_code = $AuthCode
+            cert_file = "cert.pem"
+            key_file = "key.pem"
+        }
+    }
 
     # Ensure GFK directory exists
     if (-not (Test-Path $GfkDir)) {
@@ -611,7 +660,8 @@ socks_port = $SocksPort
         return $false
     }
 
-    [System.IO.File]::WriteAllText("$GfkDir\parameters.py", $params)
+    $json = $config | ConvertTo-Json -Depth 6
+    [System.IO.File]::WriteAllText("$GfkDir\gfk.json", $json)
     Save-Settings -Backend "gfk" -ServerAddr $ServerIP -SocksPort $SocksPort
     Write-Success "GFK configuration saved"
     return $true
@@ -622,17 +672,12 @@ function Start-Gfk {
         if (-not (Install-NpcapIfMissing)) { return }
     }
 
-    if (-not (Test-Python)) {
-        Write-Err "Python not found"
-        return
-    }
-
-    if (-not (Test-Path "$GfkDir\mainclient.py")) {
+    if (-not (Test-Path $GfkClientExe)) {
         Write-Err "GFK not installed"
         return
     }
 
-    if (-not (Test-Path "$GfkDir\parameters.py")) {
+    if (-not (Test-Path "$GfkDir\gfk.json")) {
         Write-Err "GFK not configured"
         return
     }
@@ -648,27 +693,18 @@ function Start-Gfk {
     Write-Host "  Configure your browser to use this proxy."
     Write-Host ""
     Write-Info "Starting GFW-knocker client..."
-    Write-Info "This will start the raw socket client + Python SOCKS5 proxy"
+    Write-Info "This will start the raw socket client + QUIC tunnel"
     Write-Info "Press Ctrl+C to stop"
     Write-Host ""
 
     # Start GFK client
-    Push-Location $GfkDir
-    try {
-        & python mainclient.py
-    } finally {
-        Pop-Location
-    }
+    & $GfkClientExe -config "$GfkDir\gfk.json"
 }
 
 function Stop-GfkClient {
-    # Get-Process doesn't have CommandLine property - use CIM instead
-    $procs = Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction SilentlyContinue |
-             Where-Object { $_.CommandLine -match "mainclient|gfk" }
+    $procs = Get-CimInstance Win32_Process -Filter "Name LIKE 'gfk-client.exe%'" -ErrorAction SilentlyContinue
     if ($procs) {
-        $procs | ForEach-Object {
-            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
-        }
+        $procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         Write-Success "GFK client stopped"
     } else {
         Write-Info "GFK client not running"
@@ -704,12 +740,12 @@ function Get-ClientStatus {
         Write-Err "Npcap: NOT installed"
     }
 
-    # Python (for GFK)
+    # Go (for GFK)
     if ($backend -eq "gfk" -or -not $backend) {
-        if (Test-Python) {
-            Write-Success "Python: Installed"
+        if (Test-Go) {
+            Write-Success "Go: Installed"
         } else {
-            Write-Warn "Python: Not found (needed for GFK)"
+            Write-Warn "Go: Not found (needed for GFK)"
         }
     }
 
@@ -719,15 +755,15 @@ function Get-ClientStatus {
     }
 
     # GFK
-    if (Test-Path "$GfkDir\mainclient.py") {
-        Write-Success "GFK scripts: Found"
+    if (Test-Path $GfkClientExe) {
+        Write-Success "GFK client: Found"
     }
 
     # Config
     if (Test-Path $ConfigFile) {
         Write-Success "Paqet config: Found"
     }
-    if (Test-Path "$GfkDir\parameters.py") {
+    if (Test-Path "$GfkDir\gfk.json") {
         Write-Success "GFK config: Found"
     }
 

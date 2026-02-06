@@ -12,24 +12,24 @@ if %errorlevel% neq 0 (
 
 echo.
 echo ===============================================
-echo   GFW-KNOCKER CLIENT (Python/QUIC Proxy)
+echo   GFW-KNOCKER CLIENT (Go/QUIC Proxy)
 echo ===============================================
 echo.
 echo   Requirements:
 echo     - Npcap (will prompt to install)
-echo     - Python 3.x (will prompt to install)
+echo     - Go toolchain (will prompt to install)
 echo.
 echo   Once connected, configure your browser:
 echo.
 echo   FIREFOX:
 echo     Settings ^> Network Settings ^> Settings
 echo     Select "Manual proxy configuration"
-echo     SOCKS Host: 127.0.0.1    Port: 1080
+echo     SOCKS Host: 127.0.0.1    Port: 14000
 echo     Select SOCKS v5
 echo     Check "Proxy DNS when using SOCKS v5"
 echo.
 echo   CHROME (launch with proxy):
-echo     chrome.exe --proxy-server="socks5://127.0.0.1:1080"
+echo     chrome.exe --proxy-server="socks5://127.0.0.1:14000"
 echo.
 echo   To verify: Visit https://ifconfig.me
 echo   (Should show your server IP, not your home IP)

@@ -7,10 +7,10 @@
 |_|             |_|
 ```
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/SamNet-dev/paqctl/releases)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/sajadbayatani/paqctl/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Server](https://img.shields.io/badge/server-Linux-lightgrey.svg)](https://github.com/SamNet-dev/paqctl)
-[![Client](https://img.shields.io/badge/client-Windows%20%7C%20macOS%20%7C%20Linux-green.svg)](https://github.com/SamNet-dev/paqctl)
+[![Server](https://img.shields.io/badge/server-Linux-lightgrey.svg)](https://github.com/sajadbayatani/paqctl)
+[![Client](https://img.shields.io/badge/client-Windows%20%7C%20macOS%20%7C%20Linux-green.svg)](https://github.com/sajadbayatani/paqctl)
 
 **Bypass firewall restrictions and access the free internet**
 
@@ -113,7 +113,7 @@ YOUR COMPUTER                YOUR VPS                   INTERNET
 Run this on your VPS (requires root):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SamNet-dev/paqctl/main/paqctl.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/sajadbayatani/paqctl/main/paqctl.sh | sudo bash
 ```
 
 Then open the interactive menu:
@@ -153,7 +153,7 @@ The simplest way to get started - just download, double-click, and connect!
 
 ### Step 1: Download
 
-1. Go to: https://github.com/SamNet-dev/paqctl
+1. Go to: https://github.com/sajadbayatani/paqctl
 2. Click the green **"Code"** button → **"Download ZIP"**
 3. Extract the ZIP file anywhere (e.g., Desktop)
 4. Open the `windows` folder inside
@@ -202,12 +202,12 @@ For more control, use the interactive PowerShell menu.
 
 **Option A: One-liner (downloads and runs automatically)**
 ```powershell
-irm https://raw.githubusercontent.com/SamNet-dev/paqctl/main/windows/paqet-client.ps1 | iex
+irm https://raw.githubusercontent.com/sajadbayatani/paqctl/main/windows/paqet-client.ps1 | iex
 ```
 
 **Option B: Download first, then run**
 ```powershell
-git clone https://github.com/SamNet-dev/paqctl.git
+git clone https://github.com/sajadbayatani/paqctl.git
 cd paqctl\windows
 .\paqet-client.ps1
 ```
@@ -289,9 +289,9 @@ You'll see an interactive menu:
 1. Press `2` and Enter
 2. The script will:
    - Install **Npcap**
-   - Install **Python 3.10+** (if not present)
-   - Install Python packages: `scapy`, `aioquic`
-   - Copy GFK client scripts
+   - Download **GFK client binary** (or build from source)
+   - Install **Go** only if a build is needed
+   - Create GFK config
 
 ---
 
@@ -511,76 +511,77 @@ Your SOCKS5 proxy is now at `127.0.0.1:1080`
 
 ### Option B: GFK on macOS
 
-GFK requires Python and some setup:
+GFK is now written in Go. You can use a prebuilt binary or build it locally.
 
-#### Step 1: Install Python 3.10+
+#### Step 1: Get the GFK client binary
+
+**Option A: Prebuilt binary (recommended)**
 
 ```bash
-brew install python@3.11
+# Intel Mac
+curl -LO https://github.com/sajadbayatani/paqctl/releases/download/v1.0.0/gfk-client-darwin-amd64
+chmod +x gfk-client-darwin-amd64
+
+# Apple Silicon
+curl -LO https://github.com/sajadbayatani/paqctl/releases/download/v1.0.0/gfk-client-darwin-arm64
+chmod +x gfk-client-darwin-arm64
 ```
 
-#### Step 2: Clone the Repository
+**Option B: Build from source**
 
 ```bash
-git clone https://github.com/SamNet-dev/paqctl.git
-cd paqctl/gfk/client
+brew install go
+git clone https://github.com/sajadbayatani/paqctl.git
+cd paqctl/gfk/go
+go mod download
+go build -o gfk-client ./cmd/gfk-client
 ```
 
-#### Step 3: Install Python Dependencies
+#### Step 2: Create `gfk.json`
 
 ```bash
-pip3 install scapy aioquic
-```
-
-#### Step 4: Create parameters.py
-
-```bash
-cat > parameters.py << 'EOF'
-# GFW-knocker client configuration
-from scapy.all import conf
-
-# Server settings
-vps_ip = "YOUR_SERVER_IP"
-xray_server_ip = "127.0.0.1"
-
-# Port mappings (local_port: remote_port)
-tcp_port_mapping = {14000: 443}
-udp_port_mapping = {}
-
-# VIO (raw socket) ports
-vio_tcp_server_port = 45000
-vio_tcp_client_port = 40000
-vio_udp_server_port = 35000
-vio_udp_client_port = 30000
-
-# QUIC tunnel ports
-quic_server_port = 25000
-quic_client_port = 20000
-quic_local_ip = "127.0.0.1"
-
-# QUIC settings
-quic_verify_cert = False
-quic_idle_timeout = 86400
-udp_timeout = 300
-quic_mtu = 1420
-quic_max_data = 1073741824
-quic_max_stream_data = 1073741824
-quic_auth_code = "YOUR_AUTH_CODE"
-quic_certificate = "cert.pem"
-quic_private_key = "key.pem"
-
-# SOCKS proxy
-socks_port = 14000
+cat > gfk.json << 'EOF'
+{
+  "vps_ip": "YOUR_SERVER_IP",
+  "xray_server_ip_address": "127.0.0.1",
+  "tcp_port_mapping": { "14000": 443 },
+  "udp_port_mapping": {},
+  "vio": {
+    "tcp_server_port": 45000,
+    "tcp_client_port": 40000,
+    "udp_server_port": 35000,
+    "udp_client_port": 30000,
+    "tcp_flags": "AP",
+    "iface": "",
+    "my_ip": "",
+    "gateway_mac": "",
+    "local_mac": ""
+  },
+  "quic": {
+    "server_port": 25000,
+    "client_port": 20000,
+    "local_ip": "127.0.0.1",
+    "idle_timeout": 86400,
+    "udp_timeout": 300,
+    "mtu": 1420,
+    "verify_cert": false,
+    "max_data": 1073741824,
+    "max_stream_data": 1073741824,
+    "auth_code": "YOUR_AUTH_CODE",
+    "cert_file": "cert.pem",
+    "key_file": "key.pem"
+  }
+}
 EOF
 ```
 
 Replace `YOUR_SERVER_IP` and `YOUR_AUTH_CODE` with your actual values.
 
-#### Step 5: Run GFK Client
+#### Step 3: Run GFK Client
 
 ```bash
 # Requires sudo for raw socket access
-sudo python3 mainclient.py
+sudo ./gfk-client -config gfk.json
 ```
 
 Your SOCKS5 proxy is now at `127.0.0.1:14000`
@@ -617,17 +618,16 @@ macOS requires special permissions for raw sockets:
 </details>
 
 <details>
-<summary><strong>Python package installation fails</strong></summary>
+<summary><strong>Go build fails</strong></summary>
 
-Try using a virtual environment:
+Try updating Go and cleaning the module cache:
 
 ```bash
-python3 -m venv ~/paqet-venv
-source ~/paqet-venv/bin/activate
-pip install scapy aioquic
+brew upgrade go
+go clean -modcache
 ```
 
-Then run GFK from within the venv.
+Then rebuild the client.
 </details>
 
 </details>
@@ -683,19 +683,21 @@ sudo ./paqet_linux_amd64 run -c config.yaml
 ### Option B: GFK
 
 ```bash
-# Install dependencies
-sudo apt install python3 python3-pip  # Debian/Ubuntu
-# or: sudo dnf install python3 python3-pip  # Fedora
+# Prebuilt binary (recommended)
+curl -LO https://github.com/sajadbayatani/paqctl/releases/download/v1.0.0/gfk-client-linux-amd64
+chmod +x gfk-client-linux-amd64
 
-pip3 install scapy aioquic
+# Or build from source
+sudo apt install golang-go  # Debian/Ubuntu
+# or: sudo dnf install golang  # Fedora
+git clone https://github.com/sajadbayatani/paqctl.git
+cd paqctl/gfk/go
+go mod download
+go build -o gfk-client ./cmd/gfk-client
 
-# Clone and configure
-git clone https://github.com/SamNet-dev/paqctl.git
-cd paqctl/gfk/client
-
-# Create parameters.py (same as macOS section above)
+# Create gfk.json (same as macOS section above)
 # Then run:
-sudo python3 mainclient.py
+sudo ./gfk-client -config gfk.json
 ```
 
 ### Configure Browser
@@ -930,7 +932,7 @@ You should see:
 
 - You don't need `paqctl` script for basic usage - paqet runs standalone
 - Server and client versions should match
-- For GFK, the process is more complex (needs Python) - use paqet if possible
+- For GFK, the process is more complex (raw sockets + QUIC) - use paqet if possible
 
 </details>
 
@@ -1018,7 +1020,7 @@ This tool is for legitimate privacy and access needs. Laws vary by country. Use 
 ## Contributing
 
 Issues and pull requests are welcome at:
-https://github.com/SamNet-dev/paqctl
+https://github.com/sajadbayatani/paqctl
 
 ---
 
@@ -1033,8 +1035,8 @@ MIT License - See [LICENSE](LICENSE) file.
 - [paqet](https://github.com/hanselime/paqet) - KCP over raw TCP packets with custom flags (original source)
 - [paqetNG](https://github.com/AliRezaBeigy/paqetNG) - Android client for paqet
 - [GFW-knocker](https://github.com/GFW-knocker/gfw_resist_tcp_proxy) - Violated TCP technique
-- [aioquic](https://github.com/aiortc/aioquic) - QUIC protocol implementation
-- [scapy](https://scapy.net/) - Packet manipulation library
+- [quic-go](https://github.com/quic-go/quic-go) - QUIC protocol implementation
+- [gopacket](https://github.com/google/gopacket) - Packet parsing and capture
 - [kcptun](https://github.com/xtaci/kcptun) - KCP protocol inspiration
 
 ---
@@ -1108,7 +1110,7 @@ MIT License - See [LICENSE](LICENSE) file.
 این دستور را روی VPS خود اجرا کنید (نیاز به root دارد):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SamNet-dev/paqctl/main/paqctl.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/sajadbayatani/paqctl/main/paqctl.sh | sudo bash
 ```
 
 سپس منوی تعاملی را باز کنید:
@@ -1148,7 +1150,7 @@ sudo paqctl info
 
 ### مرحله ۱: دانلود
 
-1. بروید به: https://github.com/SamNet-dev/paqctl
+1. بروید به: https://github.com/sajadbayatani/paqctl
 2. روی دکمه سبز **"Code"** کلیک کنید → **"Download ZIP"**
 3. فایل ZIP را در هر جایی استخراج کنید (مثلاً دسکتاپ)
 4. وارد پوشه `windows` شوید
@@ -1197,12 +1199,12 @@ sudo paqctl info
 
 **گزینه A: یک خطی (خودکار دانلود و اجرا می‌کند)**
 ```powershell
-irm https://raw.githubusercontent.com/SamNet-dev/paqctl/main/windows/paqet-client.ps1 | iex
+irm https://raw.githubusercontent.com/sajadbayatani/paqctl/main/windows/paqet-client.ps1 | iex
 ```
 
 **گزینه B: اول دانلود، بعد اجرا**
 ```powershell
-git clone https://github.com/SamNet-dev/paqctl.git
+git clone https://github.com/sajadbayatani/paqctl.git
 cd paqctl\windows
 .\paqet-client.ps1
 ```
@@ -1273,8 +1275,8 @@ cd paqctl\windows
 1. کلید `2` را بزنید و Enter
 2. اسکریپت موارد زیر را انجام می‌دهد:
    - نصب **Npcap**
-   - نصب **Python 3.10+**
-   - نصب پکیج‌های Python
+   - دانلود **باینری GFK** (یا ساخت از سورس)
+   - نصب **Go** فقط در صورت نیاز به ساخت
 
 ---
 
@@ -1483,33 +1485,36 @@ sudo ~/paqet/paqet_darwin_arm64 run -c ~/paqet/config.yaml
 
 ### گزینه B: GFK روی macOS
 
-#### مرحله ۱: نصب Python
+#### مرحله ۱: دریافت باینری یا ساخت
 
 ```bash
-brew install python@3.11
+# Intel
+curl -LO https://github.com/sajadbayatani/paqctl/releases/download/v1.0.0/gfk-client-darwin-amd64
+chmod +x gfk-client-darwin-amd64
+
+# Apple Silicon
+curl -LO https://github.com/sajadbayatani/paqctl/releases/download/v1.0.0/gfk-client-darwin-arm64
+chmod +x gfk-client-darwin-arm64
 ```
 
-#### مرحله ۲: کلون مخزن
+یا ساخت از سورس:
 
 ```bash
-git clone https://github.com/SamNet-dev/paqctl.git
-cd paqctl/gfk/client
+brew install go
+git clone https://github.com/sajadbayatani/paqctl.git
+cd paqctl/gfk/go
+go mod download
+go build -o gfk-client ./cmd/gfk-client
 ```
 
-#### مرحله ۳: نصب وابستگی‌ها
+#### مرحله ۲: ایجاد gfk.json
+
+فایل `gfk.json` را با اطلاعات سرور خود بسازید (مشابه بخش انگلیسی بالا).
+
+#### مرحله ۳: اجرا
 
 ```bash
-pip3 install scapy aioquic
-```
-
-#### مرحله ۴: ایجاد parameters.py
-
-فایل `parameters.py` را با اطلاعات سرور خود بسازید (مشابه بخش انگلیسی بالا).
-
-#### مرحله ۵: اجرا
-
-```bash
-sudo python3 mainclient.py
+sudo ./gfk-client -config gfk.json
 ```
 
 پروکسی در `127.0.0.1:14000` است.
@@ -1579,17 +1584,21 @@ sudo ./paqet_linux_amd64 run -c config.yaml
 ### گزینه B: GFK
 
 ```bash
-# نصب وابستگی‌ها
-sudo apt install python3 python3-pip  # Debian/Ubuntu
-pip3 install scapy aioquic
+# باینری آماده (توصیه‌شده)
+curl -LO https://github.com/sajadbayatani/paqctl/releases/download/v1.0.0/gfk-client-linux-amd64
+chmod +x gfk-client-linux-amd64
 
-# کلون و پیکربندی
-git clone https://github.com/SamNet-dev/paqctl.git
-cd paqctl/gfk/client
+# یا ساخت از سورس
+sudo apt install golang-go  # Debian/Ubuntu
+# یا: sudo dnf install golang  # Fedora
+git clone https://github.com/sajadbayatani/paqctl.git
+cd paqctl/gfk/go
+go mod download
+go build -o gfk-client ./cmd/gfk-client
 
-# ایجاد parameters.py (مشابه بخش macOS)
+# ایجاد gfk.json (مشابه بخش macOS)
 # سپس اجرا:
-sudo python3 mainclient.py
+sudo ./gfk-client -config gfk.json
 ```
 
 ### پیکربندی مرورگر
@@ -1891,7 +1900,7 @@ sudo paqctl logs      # مشاهده لاگ‌ها
 ## مشارکت
 
 مشکلات و pull request در گیت‌هاب:
-https://github.com/SamNet-dev/paqctl
+https://github.com/sajadbayatani/paqctl
 
 ---
 
@@ -1899,6 +1908,6 @@ https://github.com/SamNet-dev/paqctl
 
 - [paqet](https://github.com/hanselime/paqet) - پروکسی مبتنی بر KCP با SOCKS5 داخلی (سورس اصلی)
 - [GFW-knocker](https://github.com/GFW-knocker/gfw_resist_tcp_proxy) - تکنیک TCP نقض‌شده
-- [aioquic](https://github.com/aiortc/aioquic) - پیاده‌سازی QUIC
-- [scapy](https://scapy.net/) - کتابخانه دستکاری بسته
+- [quic-go](https://github.com/quic-go/quic-go) - پیاده‌سازی QUIC
+- [gopacket](https://github.com/google/gopacket) - کتابخانه تحلیل و کپچر بسته‌ها
 - [kcptun](https://github.com/xtaci/kcptun) - الهام‌بخش پروتکل KCP

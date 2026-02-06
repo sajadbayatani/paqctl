@@ -12,11 +12,11 @@
 # ║  * Auto-start on boot via systemd/OpenRC/SysVinit                 ║
 # ║  * Easy management via CLI or interactive menu                    ║
 # ║                                                                   ║
-# ║  Paqet: https://github.com/SamNet-dev/paqctl                       ║
+# ║  Paqet: https://github.com/sajadbayatani/paqctl                       ║
 # ╚═══════════════════════════════════════════════════════════════════╝
 #
 # Usage:
-# curl -sL https://raw.githubusercontent.com/SamNet-dev/paqctl/main/paqctl.sh | sudo bash
+# curl -sL https://raw.githubusercontent.com/sajadbayatani/paqctl/main/paqctl.sh | sudo bash
 #
 # Or: wget paqctl.sh && sudo bash paqctl.sh
 #
@@ -40,9 +40,10 @@ PAQET_REPO="hanselime/paqet"
 PAQET_API_URL="https://api.github.com/repos/${PAQET_REPO}/releases/latest"
 INSTALL_DIR="${INSTALL_DIR:-/opt/paqctl}"
 BACKUP_DIR="$INSTALL_DIR/backups"
-GFK_REPO="SamNet-dev/paqctl"
+GFK_REPO="sajadbayatani/paqctl"
 GFK_BRANCH="main"
 GFK_RAW_URL="https://raw.githubusercontent.com/${GFK_REPO}/${GFK_BRANCH}/gfk"
+GFK_RELEASE_BASE="https://github.com/${GFK_REPO}/releases/download/${GFK_VERSION_PINNED}"
 GFK_DIR="$INSTALL_DIR/gfk"
 MICROSOCKS_REPO="rofl0r/microsocks"
 BACKEND="${BACKEND:-paqet}"
@@ -573,7 +574,7 @@ run_config_wizard() {
     # Backend selection
     echo -e "${BOLD}Select backend:${NC}"
     echo "  1. paqet       (Go/KCP, built-in SOCKS5, single binary)"
-    echo "  2. gfw-knocker (Python/QUIC, port forwarding + microsocks)"
+    echo "  2. gfw-knocker (Go/QUIC, port forwarding via Xray)"
     echo ""
     local backend_choice
     read -p "  Enter choice [1/2]: " backend_choice < /dev/tty || true
@@ -833,16 +834,8 @@ _wizard_gfk() {
         read -p "  Mappings: " input < /dev/tty || true
         GFK_PORT_MAPPINGS="${input:-14000:443}"
 
-        # SOCKS5 port via microsocks
-        echo ""
-        echo -e "${BOLD}SOCKS5 listen port${NC} (via microsocks) [1080]:"
-        read -p "  SOCKS port: " input < /dev/tty || true
-        MICROSOCKS_PORT="${input:-1080}"
-        if ! _validate_port "$MICROSOCKS_PORT"; then
-            log_warn "Invalid port. Using default 1080."
-            MICROSOCKS_PORT=1080
-        fi
-        SOCKS_PORT="$MICROSOCKS_PORT"
+        # Local SOCKS5 proxy port is the local side of the first mapping
+        SOCKS_PORT=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d: -f1 | cut -d, -f1)
     fi
 
     # Generate GFK config
@@ -1190,100 +1183,83 @@ check_iptables_rules() {
 # GFW-knocker Backend Functions
 #═══════════════════════════════════════════════════════════════════════
 
-install_python_deps() {
-    log_info "Installing Python dependencies for GFW-knocker..."
-    if ! command -v python3 &>/dev/null; then
-        install_package python3
+install_go() {
+    log_info "Installing Go toolchain for GFW-knocker..."
+    if command -v go &>/dev/null; then
+        log_success "Go already installed"
+        return 0
     fi
-    # Ensure python3 version >= 3.10
-    local pyver
-    pyver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "0.0")
-    local pymajor pyminor
-    pymajor=$(echo "$pyver" | cut -d. -f1)
-    pyminor=$(echo "$pyver" | cut -d. -f2)
-    if [ "$pymajor" -lt 3 ] || { [ "$pymajor" -eq 3 ] && [ "$pyminor" -lt 10 ]; }; then
-        log_error "Python 3.10+ required, found $pyver"
-        return 1
-    fi
-
-    # Install venv support (varies by distro)
-    # - Debian/Ubuntu: needs python3-venv or python3.X-venv package
-    # - Fedora/RHEL/Arch/openSUSE: venv included with python3, just need pip
-    # - Alpine: needs py3-pip
     case "$PKG_MANAGER" in
         apt)
-            # Debian/Ubuntu needs python3-venv package (version-specific)
-            local pyver_full
-            pyver_full=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null)
-            if [ -n "$pyver_full" ]; then
-                install_package "python${pyver_full}-venv" || install_package "python3-venv"
-            else
-                install_package "python3-venv"
-            fi
+            install_package "golang-go" || install_package "golang"
             ;;
         dnf)
-            # Fedora/RHEL 8+: venv is included with python3, just ensure pip
-            install_package "python3-pip" || true
+            install_package "golang"
             ;;
         yum)
-            # Older RHEL/CentOS 7
-            install_package "python3-pip" || true
+            install_package "golang" || install_package "go"
             ;;
         pacman)
-            # Arch Linux: venv included with python, pip is separate
-            install_package "python-pip" || true
+            install_package "go"
             ;;
         zypper)
-            # openSUSE: venv included with python3
-            install_package "python3-pip" || true
+            install_package "go"
             ;;
         apk)
-            # Alpine
-            install_package "py3-pip" || true
+            install_package "go"
             ;;
         *)
-            # Try generic python3-venv, ignore if fails (venv may be built-in)
-            install_package "python3-venv" 2>/dev/null || true
+            log_error "Go not found. Please install Go manually."
+            return 1
             ;;
     esac
+    command -v go &>/dev/null || { log_error "Go installation failed"; return 1; }
+    log_success "Go installed"
+}
 
-    # Create virtual environment
-    local VENV_DIR="$INSTALL_DIR/venv"
-    # Check if venv exists AND is complete (has pip)
-    if [ ! -x "$VENV_DIR/bin/pip" ]; then
-        # Remove broken/incomplete venv if exists
-        [ -d "$VENV_DIR" ] && rm -rf "$VENV_DIR"
-        log_info "Creating Python virtual environment..."
-        python3 -m venv "$VENV_DIR" || {
-            log_error "Failed to create virtual environment (is python3-venv installed?)"
-            return 1
-        }
-    fi
+download_gfk_binaries() {
+    log_info "Downloading prebuilt GFW-knocker binaries..."
+    mkdir -p "$INSTALL_DIR/bin"
+    local arch
+    arch=$(uname -m 2>/dev/null || echo "unknown")
+    local suffix=""
+    case "$arch" in
+        x86_64|amd64) suffix="amd64" ;;
+        aarch64|arm64) suffix="arm64" ;;
+        *) log_warn "Unknown architecture: $arch (will build from source)"; return 1 ;;
+    esac
+    local server_url="${GFK_RELEASE_BASE}/gfk-server-linux-${suffix}"
+    local client_url="${GFK_RELEASE_BASE}/gfk-client-linux-${suffix}"
 
-    # Verify pip exists after venv creation
-    if [ ! -x "$VENV_DIR/bin/pip" ]; then
-        log_error "venv created but pip missing (install python3-venv package)"
+    if ! curl -fsSL "$server_url" -o "$INSTALL_DIR/bin/gfk-server"; then
+        log_warn "Failed to download gfk-server binary"
         return 1
     fi
+    if ! curl -fsSL "$client_url" -o "$INSTALL_DIR/bin/gfk-client"; then
+        log_warn "Failed to download gfk-client binary"
+        return 1
+    fi
+    chmod 755 "$INSTALL_DIR/bin/gfk-server" "$INSTALL_DIR/bin/gfk-client"
+    log_success "GFW-knocker binaries downloaded"
+    return 0
+}
 
-    # Install packages in venv
-    log_info "Installing scapy and aioquic in venv..."
-    "$VENV_DIR/bin/pip" install --quiet --upgrade pip 2>/dev/null || true
-    "$VENV_DIR/bin/pip" install --quiet scapy aioquic 2>/dev/null || {
-        # Try with --break-system-packages as fallback (shouldn't be needed in venv)
-        "$VENV_DIR/bin/pip" install scapy aioquic || {
-            log_error "Failed to install Python packages (scapy, aioquic)"
-            return 1
-        }
+build_gfk_go() {
+    log_info "Building GFW-knocker Go binaries..."
+    command -v go &>/dev/null || { log_error "Go not found"; return 1; }
+    [ -d "$GFK_DIR/go" ] || { log_error "GFK Go sources not found in $GFK_DIR/go"; return 1; }
+    (cd "$GFK_DIR/go" && go mod download && \
+        go build -o "$INSTALL_DIR/bin/gfk-server" ./cmd/gfk-server && \
+        go build -o "$INSTALL_DIR/bin/gfk-client" ./cmd/gfk-client) || {
+        log_error "Failed to build GFK binaries"
+        return 1
     }
+    chmod 755 "$INSTALL_DIR/bin/gfk-server" "$INSTALL_DIR/bin/gfk-client"
+    log_success "GFK Go binaries built"
+}
 
-    # Verify
-    if "$VENV_DIR/bin/python" -c "import scapy; import aioquic" 2>/dev/null; then
-        log_success "Python dependencies installed (scapy, aioquic)"
-    else
-        log_error "Python package verification failed"
-        return 1
-    fi
+install_python_deps() {
+    install_go
 }
 
 install_microsocks() {
@@ -1466,35 +1442,29 @@ setup_xray_for_gfk() {
 }
 
 download_gfk() {
-    log_info "Downloading GFW-knocker scripts..."
-    if ! mkdir -p "$GFK_DIR"; then
-        log_error "Failed to create $GFK_DIR"
+    log_info "Downloading GFW-knocker (Go) sources..."
+    if ! mkdir -p "$GFK_DIR/go"; then
+        log_error "Failed to create $GFK_DIR/go"
         return 1
     fi
-    # Note: parameters.py is generated by generate_gfk_config(), don't download it
-    # Download server scripts from gfk/server/
-    local server_files="mainserver.py quic_server.py vio_server.py"
+    # Note: gfk.json is generated by generate_gfk_config()
+    local go_files="go.mod cmd/gfk-client/main.go cmd/gfk-server/main.go internal/config/config.go internal/gfk/protocol.go internal/gfk/util.go internal/gfk/sender_unix.go internal/gfk/sender_windows.go internal/gfk/vio.go internal/gfk/quic.go"
     local f
-    for f in $server_files; do
-        if ! curl -sL "$GFK_RAW_URL/server/$f" -o "$GFK_DIR/$f"; then
+    for f in $go_files; do
+        local dest="$GFK_DIR/go/$f"
+        mkdir -p "$(dirname "$dest")"
+        if ! curl -fsSL "$GFK_RAW_URL/go/$f" -o "$dest"; then
             log_error "Failed to download $f"
             return 1
         fi
     done
-    # Download client scripts from gfk/client/
-    local client_files="mainclient.py quic_client.py vio_client.py"
-    for f in $client_files; do
-        if ! curl -sL "$GFK_RAW_URL/client/$f" -o "$GFK_DIR/$f"; then
-            log_error "Failed to download $f"
-            return 1
-        fi
-    done
-    chmod 600 "$GFK_DIR"/*.py
-    # Patch mainserver.py to use venv python for subprocesses
-    if [ -f "$GFK_DIR/mainserver.py" ]; then
-        sed -i "s|'python3'|'$INSTALL_DIR/venv/bin/python'|g" "$GFK_DIR/mainserver.py"
+    # Basic sanity check for go.mod to avoid HTML error pages
+    if [ -f "$GFK_DIR/go/go.mod" ] && ! head -n 1 "$GFK_DIR/go/go.mod" | grep -q "^module "; then
+        log_error "Invalid go.mod downloaded (unexpected content)."
+        rm -f "$GFK_DIR/go/go.mod"
+        return 1
     fi
-    log_success "GFW-knocker scripts downloaded to $GFK_DIR"
+    log_success "GFW-knocker sources downloaded to $GFK_DIR/go"
 }
 
 generate_gfk_certs() {
@@ -1521,7 +1491,7 @@ generate_gfk_config() {
     # Ensure GFK directory exists
     mkdir -p "$GFK_DIR" || { log_error "Failed to create $GFK_DIR"; return 1; }
     local _tmp
-    _tmp=$(mktemp "$GFK_DIR/parameters.py.XXXXXXXX") || { log_error "Failed to create temp file"; return 1; }
+    _tmp=$(mktemp "$GFK_DIR/gfk.json.XXXXXXXX") || { log_error "Failed to create temp file"; return 1; }
 
     # Determine port values based on role - validate they are numeric
     local vio_tcp_server_port="${GFK_VIO_PORT:-45000}"
@@ -1541,8 +1511,8 @@ generate_gfk_config() {
         fi
     done
 
-    # Escape Python string - prevents code injection
-    _escape_py_string() {
+    # Escape JSON string - prevents injection
+    _escape_json_string() {
         local s="$1"
         s="${s//\\/\\\\}"   # Escape backslashes first
         s="${s//\"/\\\"}"   # Escape double quotes
@@ -1554,7 +1524,7 @@ generate_gfk_config() {
 
     # Validate and escape server IP
     local safe_server_ip
-    safe_server_ip=$(_escape_py_string "${GFK_SERVER_IP:-}")
+    safe_server_ip=$(_escape_json_string "${GFK_SERVER_IP:-}")
     if ! _validate_ip "${GFK_SERVER_IP:-}"; then
         log_error "Invalid server IP: ${GFK_SERVER_IP:-}"
         rm -f "$_tmp"
@@ -1563,7 +1533,7 @@ generate_gfk_config() {
 
     # Validate and escape auth code
     local safe_auth_code
-    safe_auth_code=$(_escape_py_string "${GFK_AUTH_CODE:-}")
+    safe_auth_code=$(_escape_json_string "${GFK_AUTH_CODE:-}")
 
     # Build port mapping dict string with validation
     local tcp_mapping="${GFK_PORT_MAPPINGS:-14000:443}"
@@ -1581,83 +1551,76 @@ generate_gfk_config() {
             return 1
         fi
         if [ "$first" = true ]; then
-            mapping_str="${mapping_str}${lport}: ${rport}"
+            mapping_str="${mapping_str}\"${lport}\": ${rport}"
             first=false
         else
-            mapping_str="${mapping_str}, ${lport}: ${rport}"
+            mapping_str="${mapping_str}, \"${lport}\": ${rport}"
         fi
     done
     mapping_str="${mapping_str}}"
 
-    # Escape GFK_DIR for Python string
+    # Escape GFK_DIR for JSON string
     local safe_gfk_dir
-    safe_gfk_dir=$(_escape_py_string "${GFK_DIR}")
+    safe_gfk_dir=$(_escape_json_string "${GFK_DIR}")
 
     (
     umask 077
-    cat > "$_tmp" << PYEOF
-# GFW-knocker parameters - auto-generated by paqctl
-# Do not edit manually
-
-vps_ip = "${safe_server_ip}"
-xray_server_ip_address = "127.0.0.1"
-
-tcp_port_mapping = ${mapping_str}
-udp_port_mapping = {}
-
-vio_tcp_server_port = ${vio_tcp_server_port}
-vio_tcp_client_port = ${vio_tcp_client_port}
-vio_udp_server_port = ${vio_udp_server_port}
-vio_udp_client_port = ${vio_udp_client_port}
-
-quic_server_port = ${quic_server_port}
-quic_client_port = ${quic_client_port}
-quic_local_ip = "127.0.0.1"
-
-quic_idle_timeout = 86400
-udp_timeout = 300
-quic_mtu = 1420
-quic_verify_cert = False
-quic_max_data = 1073741824
-quic_max_stream_data = 1073741824
-
-quic_auth_code = "${safe_auth_code}"
-
-quic_cert_filepath = ("${safe_gfk_dir}/cert.pem", "${safe_gfk_dir}/key.pem")
-
-tcp_flags = "${GFK_TCP_FLAGS:-AP}"
-PYEOF
+    cat > "$_tmp" << JSONEOF
+{
+  "vps_ip": "${safe_server_ip}",
+  "xray_server_ip_address": "127.0.0.1",
+  "tcp_port_mapping": ${mapping_str},
+  "udp_port_mapping": {},
+  "vio": {
+    "tcp_server_port": ${vio_tcp_server_port},
+    "tcp_client_port": ${vio_tcp_client_port},
+    "udp_server_port": ${vio_udp_server_port},
+    "udp_client_port": ${vio_udp_client_port},
+    "tcp_flags": "${GFK_TCP_FLAGS:-AP}",
+    "iface": "",
+    "my_ip": "",
+    "gateway_mac": "",
+    "local_mac": ""
+  },
+  "quic": {
+    "server_port": ${quic_server_port},
+    "client_port": ${quic_client_port},
+    "local_ip": "127.0.0.1",
+    "idle_timeout": 86400,
+    "udp_timeout": 300,
+    "mtu": 1420,
+    "verify_cert": false,
+    "max_data": 1073741824,
+    "max_stream_data": 1073741824,
+    "auth_code": "${safe_auth_code}",
+    "cert_file": "${safe_gfk_dir}/cert.pem",
+    "key_file": "${safe_gfk_dir}/key.pem"
+  }
+}
+JSONEOF
     )
-    if ! mv "$_tmp" "$GFK_DIR/parameters.py"; then
+    if ! mv "$_tmp" "$GFK_DIR/gfk.json"; then
         log_error "Failed to save GFW-knocker configuration"
         rm -f "$_tmp"
         return 1
     fi
-    chmod 600 "$GFK_DIR/parameters.py"
+    chmod 600 "$GFK_DIR/gfk.json"
     log_success "GFW-knocker configuration saved"
 }
 
 create_gfk_client_wrapper() {
     log_info "Creating GFW-knocker client wrapper..."
     local wrapper="$INSTALL_DIR/bin/gfk-client.sh"
-    local msport="${MICROSOCKS_PORT:-1080}"
     mkdir -p "$INSTALL_DIR/bin"
     cat > "$wrapper" << 'WRAPEOF'
 #!/bin/bash
 set -e
 GFK_DIR="REPLACE_ME_GFK_DIR"
 INSTALL_DIR="REPLACE_ME_INSTALL_DIR"
-MICROSOCKS_PORT="REPLACE_ME_MSPORT"
 
-cd "$GFK_DIR"
-"$INSTALL_DIR/venv/bin/python" mainclient.py &
-PID1=$!
-"$INSTALL_DIR/bin/microsocks" -i 127.0.0.1 -p "$MICROSOCKS_PORT" &
-PID2=$!
-trap "kill $PID1 $PID2 2>/dev/null; wait" EXIT INT TERM
-wait
+exec "$INSTALL_DIR/bin/gfk-client" -config "$GFK_DIR/gfk.json"
 WRAPEOF
-    sed "s#REPLACE_ME_GFK_DIR#${GFK_DIR}#g; s#REPLACE_ME_INSTALL_DIR#${INSTALL_DIR}#g; s#REPLACE_ME_MSPORT#${msport}#g" "$wrapper" > "$wrapper.sed" && mv "$wrapper.sed" "$wrapper"
+    sed "s#REPLACE_ME_GFK_DIR#${GFK_DIR}#g; s#REPLACE_ME_INSTALL_DIR#${INSTALL_DIR}#g" "$wrapper" > "$wrapper.sed" && mv "$wrapper.sed" "$wrapper"
     chmod 755 "$wrapper"
     log_success "Client wrapper created at $wrapper"
 }
@@ -1673,9 +1636,9 @@ setup_service() {
     local paqet_installed=false gfk_installed=false
     [ -f "$INSTALL_DIR/bin/paqet" ] && paqet_installed=true
     if [ "$ROLE" = "server" ]; then
-        [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_server.py" ] && gfk_installed=true
+        [ -f "$INSTALL_DIR/bin/gfk-server" ] && gfk_installed=true
     else
-        [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_client.py" ] && gfk_installed=true
+        [ -f "$INSTALL_DIR/bin/gfk-client" ] && gfk_installed=true
     fi
 
     # If both backends are installed, create a combined service
@@ -1746,14 +1709,12 @@ if [ "\$ROLE" = "server" ]; then
             systemctl start xray 2>/dev/null || xray run -c /usr/local/etc/xray/config.json &>/dev/null &
         fi
     fi
-    cd "\$GFK_DIR"
-    nohup "\${INSTALL_DIR}/venv/bin/python" "\${GFK_DIR}/mainserver.py" > /var/log/gfk-backend.log 2>&1 &
+    nohup "\${INSTALL_DIR}/bin/gfk-server" -config "\${GFK_DIR}/gfk.json" > /var/log/gfk-backend.log 2>&1 &
 else
     if [ -x "\${INSTALL_DIR}/bin/gfk-client.sh" ]; then
         nohup "\${INSTALL_DIR}/bin/gfk-client.sh" > /var/log/gfk-backend.log 2>&1 &
     else
-        cd "\$GFK_DIR"
-        nohup "\${INSTALL_DIR}/venv/bin/python" "\${GFK_DIR}/mainclient.py" > /var/log/gfk-backend.log 2>&1 &
+        nohup "\${INSTALL_DIR}/bin/gfk-client" -config "\${GFK_DIR}/gfk.json" > /var/log/gfk-backend.log 2>&1 &
     fi
 fi
 echo \$! > /run/gfk-backend.pid
@@ -1767,7 +1728,7 @@ BOTH_SCRIPT
         _svc_desc="GFW-knocker Proxy Service"
         _working_dir="${GFK_DIR}"
         if [ "$ROLE" = "server" ]; then
-            _exec_start="${INSTALL_DIR}/venv/bin/python ${GFK_DIR}/mainserver.py"
+            _exec_start="${INSTALL_DIR}/bin/gfk-server -config ${GFK_DIR}/gfk.json"
         else
             _exec_start="${INSTALL_DIR}/bin/gfk-client.sh"
         fi
@@ -1999,6 +1960,7 @@ PAQET_API_URL="https://api.github.com/repos/${PAQET_REPO}/releases/latest"
 GFK_REPO="SamNet-dev/paqctl"
 GFK_BRANCH="main"
 GFK_RAW_URL="https://raw.githubusercontent.com/${GFK_REPO}/${GFK_BRANCH}/gfk"
+GFK_RELEASE_BASE="https://github.com/${GFK_REPO}/releases/download/${GFK_VERSION_PINNED}"
 GFK_DIR="$INSTALL_DIR/gfk"
 MICROSOCKS_REPO="rofl0r/microsocks"
 
@@ -2397,48 +2359,7 @@ download_paqet() {
 #═══════════════════════════════════════════════════════════════════════
 
 install_python_deps() {
-    log_info "Installing Python dependencies..."
-    if ! command -v python3 &>/dev/null; then
-        if command -v apt-get &>/dev/null; then apt-get install -y python3 2>/dev/null
-        elif command -v dnf &>/dev/null; then dnf install -y python3 2>/dev/null
-        elif command -v yum &>/dev/null; then yum install -y python3 2>/dev/null
-        elif command -v apk &>/dev/null; then apk add python3 2>/dev/null
-        fi
-    fi
-    # Verify Python 3.10+ (required for GFK)
-    local pyver pymajor pyminor
-    pyver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "0.0")
-    pymajor=$(echo "$pyver" | cut -d. -f1)
-    pyminor=$(echo "$pyver" | cut -d. -f2)
-    if [ "$pymajor" -lt 3 ] || { [ "$pymajor" -eq 3 ] && [ "$pyminor" -lt 10 ]; }; then
-        log_error "Python 3.10+ required, found $pyver"
-        return 1
-    fi
-    # Install python3-venv (version-specific for apt, generic for others)
-    if command -v apt-get &>/dev/null; then
-        apt-get install -y "python${pyver}-venv" 2>/dev/null || apt-get install -y python3-venv 2>/dev/null
-    elif command -v dnf &>/dev/null; then
-        dnf install -y python3-pip 2>/dev/null  # dnf includes venv in python3
-    elif command -v yum &>/dev/null; then
-        yum install -y python3-pip 2>/dev/null
-    elif command -v apk &>/dev/null; then
-        apk add py3-pip 2>/dev/null
-    fi
-    # Use venv (recreate if broken/incomplete)
-    local VENV_DIR="$INSTALL_DIR/venv"
-    if [ ! -x "$VENV_DIR/bin/pip" ]; then
-        [ -d "$VENV_DIR" ] && rm -rf "$VENV_DIR"
-        python3 -m venv "$VENV_DIR" || { log_error "Failed to create venv (is python3-venv installed?)"; return 1; }
-    fi
-    # Verify pip exists after venv creation
-    if [ ! -x "$VENV_DIR/bin/pip" ]; then
-        log_error "venv created but pip missing (install python${pyver}-venv)"
-        return 1
-    fi
-    "$VENV_DIR/bin/pip" install --quiet --upgrade pip 2>/dev/null || true
-    "$VENV_DIR/bin/pip" install --quiet scapy aioquic 2>/dev/null || { log_error "Failed to install Python packages"; return 1; }
-    "$VENV_DIR/bin/python" -c "import scapy; import aioquic" 2>/dev/null || { log_error "Python deps verification failed"; return 1; }
-    log_success "Python dependencies OK"
+    install_go
 }
 
 install_microsocks() {
@@ -2464,22 +2385,21 @@ install_microsocks() {
 }
 
 download_gfk() {
-    log_info "Downloading GFW-knocker scripts..."
-    mkdir -p "$GFK_DIR" || return 1
-    # Note: parameters.py is generated by generate_gfk_config(), don't download it
+    log_info "Downloading GFW-knocker (Go) sources..."
+    mkdir -p "$GFK_DIR/go" || return 1
+    # Note: gfk.json is generated by generate_gfk_config()
     local f
-    # Download server scripts from gfk/server/
-    for f in mainserver.py quic_server.py vio_server.py; do
-        curl -sL "$GFK_RAW_URL/server/$f" -o "$GFK_DIR/$f" || { log_error "Failed to download $f"; return 1; }
+    for f in go.mod cmd/gfk-client/main.go cmd/gfk-server/main.go internal/config/config.go internal/gfk/protocol.go internal/gfk/util.go internal/gfk/sender_unix.go internal/gfk/sender_windows.go internal/gfk/vio.go internal/gfk/quic.go; do
+        local dest="$GFK_DIR/go/$f"
+        mkdir -p "$(dirname "$dest")"
+        curl -fsSL "$GFK_RAW_URL/go/$f" -o "$dest" || { log_error "Failed to download $f"; return 1; }
     done
-    # Download client scripts from gfk/client/
-    for f in mainclient.py quic_client.py vio_client.py; do
-        curl -sL "$GFK_RAW_URL/client/$f" -o "$GFK_DIR/$f" || { log_error "Failed to download $f"; return 1; }
-    done
-    chmod 600 "$GFK_DIR"/*.py
-    # Patch mainserver.py to use venv python for subprocesses
-    [ -f "$GFK_DIR/mainserver.py" ] && sed -i "s|'python3'|'$INSTALL_DIR/venv/bin/python'|g" "$GFK_DIR/mainserver.py"
-    log_success "GFW-knocker scripts downloaded"
+    if [ -f "$GFK_DIR/go/go.mod" ] && ! head -n 1 "$GFK_DIR/go/go.mod" | grep -q "^module "; then
+        log_error "Invalid go.mod downloaded (unexpected content)."
+        rm -f "$GFK_DIR/go/go.mod"
+        return 1
+    fi
+    log_success "GFW-knocker sources downloaded"
 }
 
 generate_gfk_certs() {
@@ -2503,7 +2423,7 @@ generate_gfk_certs() {
 
 generate_gfk_config() {
     log_info "Generating GFW-knocker config..."
-    local _tmp; _tmp=$(mktemp "$GFK_DIR/parameters.py.XXXXXXXX") || { log_error "Failed to create temp file"; return 1; }
+    local _tmp; _tmp=$(mktemp "$GFK_DIR/gfk.json.XXXXXXXX") || { log_error "Failed to create temp file"; return 1; }
     local vio_tcp_server_port="${GFK_VIO_PORT:-45000}"
     local vio_tcp_client_port="${GFK_VIO_CLIENT_PORT:-40000}"
     local vio_udp_server_port="${GFK_VIO_UDP_SERVER:-35000}"
@@ -2515,67 +2435,71 @@ generate_gfk_config() {
               "$vio_udp_client_port" "$quic_server_port" "$quic_client_port"; do
         [[ "$_p" =~ ^[0-9]+$ ]] || { log_error "Invalid port: $_p"; rm -f "$_tmp"; return 1; }
     done
-    # Escape Python strings to prevent code injection
-    _esc_py() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//\'/\\\'}"; printf '%s' "$s"; }
-    local safe_ip; safe_ip=$(_esc_py "${GFK_SERVER_IP:-}")
-    local safe_auth; safe_auth=$(_esc_py "${GFK_AUTH_CODE:-}")
-    local safe_dir; safe_dir=$(_esc_py "${GFK_DIR}")
+    # Escape JSON strings to prevent injection
+    _esc_json() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; s="${s//\'/\\\'}"; s="${s//$'\n'/\\n}"; s="${s//$'\r'/\\r}"; printf '%s' "$s"; }
+    local safe_ip; safe_ip=$(_esc_json "${GFK_SERVER_IP:-}")
+    local safe_auth; safe_auth=$(_esc_json "${GFK_AUTH_CODE:-}")
+    local safe_dir; safe_dir=$(_esc_json "${GFK_DIR}")
     # Validate and build port mapping
     local tcp_mapping="${GFK_PORT_MAPPINGS:-14000:443}"
     local mapping_str="{" first=true pair lport rport
     for pair in $(echo "$tcp_mapping" | tr ',' ' '); do
         lport=$(echo "$pair" | cut -d: -f1); rport=$(echo "$pair" | cut -d: -f2)
         [[ "$lport" =~ ^[0-9]+$ ]] && [[ "$rport" =~ ^[0-9]+$ ]] || { log_error "Invalid mapping: $pair"; rm -f "$_tmp"; return 1; }
-        [ "$first" = true ] && { mapping_str="${mapping_str}${lport}: ${rport}"; first=false; } || mapping_str="${mapping_str}, ${lport}: ${rport}"
+        [ "$first" = true ] && { mapping_str="${mapping_str}\"${lport}\": ${rport}"; first=false; } || mapping_str="${mapping_str}, \"${lport}\": ${rport}"
     done
     mapping_str="${mapping_str}}"
-    (umask 077; cat > "$_tmp" << PYEOF
-vps_ip = "${safe_ip}"
-xray_server_ip_address = "127.0.0.1"
-tcp_port_mapping = ${mapping_str}
-udp_port_mapping = {}
-vio_tcp_server_port = ${vio_tcp_server_port}
-vio_tcp_client_port = ${vio_tcp_client_port}
-vio_udp_server_port = ${vio_udp_server_port}
-vio_udp_client_port = ${vio_udp_client_port}
-quic_server_port = ${quic_server_port}
-quic_client_port = ${quic_client_port}
-quic_local_ip = "127.0.0.1"
-quic_idle_timeout = 86400
-udp_timeout = 300
-quic_mtu = 1420
-quic_verify_cert = False
-quic_max_data = 1073741824
-quic_max_stream_data = 1073741824
-quic_auth_code = "${safe_auth}"
-quic_cert_filepath = ("${safe_dir}/cert.pem", "${safe_dir}/key.pem")
-tcp_flags = "${GFK_TCP_FLAGS:-AP}"
-PYEOF
+    (umask 077; cat > "$_tmp" << JSONEOF
+{
+  "vps_ip": "${safe_ip}",
+  "xray_server_ip_address": "127.0.0.1",
+  "tcp_port_mapping": ${mapping_str},
+  "udp_port_mapping": {},
+  "vio": {
+    "tcp_server_port": ${vio_tcp_server_port},
+    "tcp_client_port": ${vio_tcp_client_port},
+    "udp_server_port": ${vio_udp_server_port},
+    "udp_client_port": ${vio_udp_client_port},
+    "tcp_flags": "${GFK_TCP_FLAGS:-AP}",
+    "iface": "",
+    "my_ip": "",
+    "gateway_mac": "",
+    "local_mac": ""
+  },
+  "quic": {
+    "server_port": ${quic_server_port},
+    "client_port": ${quic_client_port},
+    "local_ip": "127.0.0.1",
+    "idle_timeout": 86400,
+    "udp_timeout": 300,
+    "mtu": 1420,
+    "verify_cert": false,
+    "max_data": 1073741824,
+    "max_stream_data": 1073741824,
+    "auth_code": "${safe_auth}",
+    "cert_file": "${safe_dir}/cert.pem",
+    "key_file": "${safe_dir}/key.pem"
+  }
+}
+JSONEOF
     )
-    mv "$_tmp" "$GFK_DIR/parameters.py" || { rm -f "$_tmp"; return 1; }
-    chmod 600 "$GFK_DIR/parameters.py"
+    mv "$_tmp" "$GFK_DIR/gfk.json" || { rm -f "$_tmp"; return 1; }
+    chmod 600 "$GFK_DIR/gfk.json"
     log_success "GFW-knocker config saved"
 }
 
 create_gfk_client_wrapper() {
     local wrapper="$INSTALL_DIR/bin/gfk-client.sh"
-    local msport="${MICROSOCKS_PORT:-1080}"
     mkdir -p "$INSTALL_DIR/bin"
     cat > "$wrapper" << 'WEOF'
 #!/bin/bash
 set -e
 GFK_DIR="REPLACE_GFK"
 INSTALL_DIR="REPLACE_INST"
-MICROSOCKS_PORT="REPLACE_MSP"
-cd "$GFK_DIR"
-"$INSTALL_DIR/venv/bin/python" mainclient.py &
-PID1=$!
-"$INSTALL_DIR/bin/microsocks" -i 127.0.0.1 -p "$MICROSOCKS_PORT" &
-PID2=$!
-trap "kill $PID1 $PID2 2>/dev/null; wait" EXIT INT TERM
-wait
+
+exec "$INSTALL_DIR/bin/gfk-client" -config "$GFK_DIR/gfk.json"
 WEOF
-    sed "s#REPLACE_GFK#${GFK_DIR}#g; s#REPLACE_INST#${INSTALL_DIR}#g; s#REPLACE_MSP#${msport}#g" "$wrapper" > "$wrapper.sed" && mv "$wrapper.sed" "$wrapper"
+    sed "s#REPLACE_GFK#${GFK_DIR}#g; s#REPLACE_INST#${INSTALL_DIR}#g" "$wrapper" > "$wrapper.sed" && mv "$wrapper.sed" "$wrapper"
     chmod 755 "$wrapper"
 }
 
@@ -2588,9 +2512,9 @@ is_running() {
     local paqet_installed=false gfk_installed=false
     [ -f "$INSTALL_DIR/bin/paqet" ] && paqet_installed=true
     if [ "$ROLE" = "server" ]; then
-        [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_server.py" ] && gfk_installed=true
+        [ -f "$INSTALL_DIR/bin/gfk-server" ] && gfk_installed=true
     else
-        [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_client.py" ] && gfk_installed=true
+        [ -f "$INSTALL_DIR/bin/gfk-client" ] && gfk_installed=true
     fi
 
     # If both backends installed, return true if EITHER is running
@@ -2612,8 +2536,8 @@ is_running() {
     # Also check for the process directly with more specific patterns
     if [ "$BACKEND" = "gfw-knocker" ]; then
         # Use full path matching to avoid false positives
-        pgrep -f "${GFK_DIR}/mainserver.py" &>/dev/null && return 0
-        pgrep -f "${GFK_DIR}/mainclient.py" &>/dev/null && return 0
+        pgrep -f "${INSTALL_DIR}/bin/gfk-server" &>/dev/null && return 0
+        pgrep -f "${INSTALL_DIR}/bin/gfk-client" &>/dev/null && return 0
         pgrep -f "${INSTALL_DIR}/bin/gfk-client.sh" &>/dev/null && return 0
     else
         # Match specific config file path
@@ -2631,9 +2555,9 @@ is_paqet_running() {
 # Check if GFK backend specifically is running
 is_gfk_running() {
     if [ "$ROLE" = "server" ]; then
-        pgrep -f "${GFK_DIR}/mainserver.py" &>/dev/null && return 0
+        pgrep -f "${INSTALL_DIR}/bin/gfk-server" &>/dev/null && return 0
     else
-        pgrep -f "${GFK_DIR}/mainclient.py" &>/dev/null && return 0
+        pgrep -f "${INSTALL_DIR}/bin/gfk-client" &>/dev/null && return 0
         pgrep -f "${INSTALL_DIR}/bin/gfk-client.sh" &>/dev/null && return 0
     fi
     return 1
@@ -2827,7 +2751,11 @@ start_gfk_backend() {
         return 0
     fi
 
-    if [ ! -d "$GFK_DIR" ] || [ ! -f "$GFK_DIR/quic_server.py" ]; then
+    if [ "$ROLE" = "server" ] && [ ! -f "$INSTALL_DIR/bin/gfk-server" ]; then
+        log_error "gfw-knocker not installed. Use 'Install additional backend' first."
+        return 1
+    fi
+    if [ "$ROLE" = "client" ] && [ ! -f "$INSTALL_DIR/bin/gfk-client" ]; then
         log_error "gfw-knocker not installed. Use 'Install additional backend' first."
         return 1
     fi
@@ -2849,18 +2777,12 @@ start_gfk_backend() {
                 systemctl start xray 2>/dev/null || xray run -c /usr/local/etc/xray/config.json &>/dev/null &
             fi
         fi
-        # Run from GFK_DIR so relative script paths work
-        pushd "$GFK_DIR" >/dev/null
-        nohup "$INSTALL_DIR/venv/bin/python" "$GFK_DIR/mainserver.py" > /var/log/gfk-backend.log 2>&1 &
-        popd >/dev/null
+        nohup "$INSTALL_DIR/bin/gfk-server" -config "$GFK_DIR/gfk.json" > /var/log/gfk-backend.log 2>&1 &
     else
         if [ -x "$INSTALL_DIR/bin/gfk-client.sh" ]; then
             nohup "$INSTALL_DIR/bin/gfk-client.sh" > /var/log/gfk-backend.log 2>&1 &
         else
-            # Run from GFK_DIR so relative script paths work
-            pushd "$GFK_DIR" >/dev/null
-            nohup "$INSTALL_DIR/venv/bin/python" "$GFK_DIR/mainclient.py" > /var/log/gfk-backend.log 2>&1 &
-            popd >/dev/null
+            nohup "$INSTALL_DIR/bin/gfk-client" -config "$GFK_DIR/gfk.json" > /var/log/gfk-backend.log 2>&1 &
         fi
     fi
     echo $! > /run/gfk-backend.pid
@@ -2894,10 +2816,9 @@ stop_gfk_backend() {
         rm -f /run/gfk-backend.pid
     fi
 
-    pkill -f "${GFK_DIR}/mainserver.py" 2>/dev/null || true
-    pkill -f "${GFK_DIR}/mainclient.py" 2>/dev/null || true
+    pkill -f "${INSTALL_DIR}/bin/gfk-server" 2>/dev/null || true
+    pkill -f "${INSTALL_DIR}/bin/gfk-client" 2>/dev/null || true
     pkill -f "${INSTALL_DIR}/bin/gfk-client.sh" 2>/dev/null || true
-    pkill -f "${INSTALL_DIR}/bin/microsocks" 2>/dev/null || true
 
     # Remove GFK firewall rules
     local _saved_backend="$BACKEND"
@@ -2909,8 +2830,8 @@ stop_gfk_backend() {
     if ! is_gfk_running; then
         log_success "gfw-knocker backend stopped"
     else
-        pkill -9 -f "${GFK_DIR}/mainserver.py" 2>/dev/null || true
-        pkill -9 -f "${GFK_DIR}/mainclient.py" 2>/dev/null || true
+        pkill -9 -f "${INSTALL_DIR}/bin/gfk-server" 2>/dev/null || true
+        pkill -9 -f "${INSTALL_DIR}/bin/gfk-client" 2>/dev/null || true
         pkill -9 -f "${INSTALL_DIR}/bin/gfk-client.sh" 2>/dev/null || true
         log_success "gfw-knocker backend stopped (forced)"
     fi
@@ -2921,9 +2842,9 @@ start_paqet() {
     local paqet_installed=false gfk_installed=false
     [ -f "$INSTALL_DIR/bin/paqet" ] && paqet_installed=true
     if [ "$ROLE" = "server" ]; then
-        [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_server.py" ] && gfk_installed=true
+        [ -f "$INSTALL_DIR/bin/gfk-server" ] && gfk_installed=true
     else
-        [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_client.py" ] && gfk_installed=true
+        [ -f "$INSTALL_DIR/bin/gfk-client" ] && gfk_installed=true
     fi
 
     # If both backends installed, start both
@@ -2967,7 +2888,11 @@ start_paqet() {
             if [ "$ROLE" = "client" ] && [ -x "$INSTALL_DIR/bin/gfk-client.sh" ]; then
                 nohup "$INSTALL_DIR/bin/gfk-client.sh" > /var/log/paqctl.log 2>&1 &
             else
-                nohup "$INSTALL_DIR/venv/bin/python" "$GFK_DIR/mainserver.py" > /var/log/paqctl.log 2>&1 &
+                if [ "$ROLE" = "server" ]; then
+                    nohup "$INSTALL_DIR/bin/gfk-server" -config "$GFK_DIR/gfk.json" > /var/log/paqctl.log 2>&1 &
+                else
+                    nohup "$INSTALL_DIR/bin/gfk-client" -config "$GFK_DIR/gfk.json" > /var/log/paqctl.log 2>&1 &
+                fi
             fi
         else
             nohup "$INSTALL_DIR/bin/paqet" run -c "$INSTALL_DIR/config.yaml" > /var/log/paqctl.log 2>&1 &
@@ -2993,9 +2918,9 @@ stop_paqet() {
     local paqet_installed=false gfk_installed=false
     [ -f "$INSTALL_DIR/bin/paqet" ] && paqet_installed=true
     if [ "$ROLE" = "server" ]; then
-        [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_server.py" ] && gfk_installed=true
+        [ -f "$INSTALL_DIR/bin/gfk-server" ] && gfk_installed=true
     else
-        [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_client.py" ] && gfk_installed=true
+        [ -f "$INSTALL_DIR/bin/gfk-client" ] && gfk_installed=true
     fi
 
     # If both backends installed, stop both
@@ -3044,10 +2969,9 @@ stop_paqet() {
         fi
         # Use specific paths to avoid killing unrelated processes
         if [ "$BACKEND" = "gfw-knocker" ]; then
-            pkill -f "${GFK_DIR}/mainserver.py" 2>/dev/null || true
-            pkill -f "${GFK_DIR}/mainclient.py" 2>/dev/null || true
+            pkill -f "${INSTALL_DIR}/bin/gfk-server" 2>/dev/null || true
+            pkill -f "${INSTALL_DIR}/bin/gfk-client" 2>/dev/null || true
             pkill -f "${INSTALL_DIR}/bin/gfk-client.sh" 2>/dev/null || true
-            pkill -f "${INSTALL_DIR}/bin/microsocks" 2>/dev/null || true
         else
             pkill -f "${INSTALL_DIR}/bin/paqet run -c" 2>/dev/null || true
         fi
@@ -3060,10 +2984,9 @@ stop_paqet() {
     else
         log_warn "${BACKEND} may still be running, force killing..."
         if [ "$BACKEND" = "gfw-knocker" ]; then
-            pkill -9 -f "${GFK_DIR}/mainserver.py" 2>/dev/null || true
-            pkill -9 -f "${GFK_DIR}/mainclient.py" 2>/dev/null || true
+            pkill -9 -f "${INSTALL_DIR}/bin/gfk-server" 2>/dev/null || true
+            pkill -9 -f "${INSTALL_DIR}/bin/gfk-client" 2>/dev/null || true
             pkill -9 -f "${INSTALL_DIR}/bin/gfk-client.sh" 2>/dev/null || true
-            pkill -9 -f "${INSTALL_DIR}/bin/microsocks" 2>/dev/null || true
         else
             pkill -9 -f "${INSTALL_DIR}/bin/paqet run -c" 2>/dev/null || true
         fi
@@ -3101,7 +3024,7 @@ _apply_firewall() {
             iptables -t raw -A PREROUTING -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
         iptables -t raw -C OUTPUT -p tcp --sport "$vio_port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
             iptables -t raw -A OUTPUT -p tcp --sport "$vio_port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
-        # Drop incoming TCP on VIO port (scapy sniffer will handle it)
+        # Drop incoming TCP on VIO port (raw socket sniffer will handle it)
         iptables -C INPUT -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j DROP 2>/dev/null || \
             iptables -A INPUT -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j DROP 2>/dev/null || \
             echo -e "${YELLOW}[!]${NC} Failed to add VIO port DROP rule" >&2
@@ -3306,7 +3229,7 @@ show_status() {
         # PID
         local pid
         if [ "$BACKEND" = "gfw-knocker" ]; then
-            pid=$(pgrep -f "mainserver.py|mainclient.py" 2>/dev/null | head -1)
+            pid=$(pgrep -f "gfk-server|gfk-client" 2>/dev/null | head -1)
         else
             pid=$(pgrep -f "paqet run -c" 2>/dev/null | head -1)
         fi
@@ -3358,7 +3281,9 @@ show_status() {
                 echo -e "  Firewall:   ${RED}VIO port NOT blocked${NC}"
             fi
         else
-            echo -e "  SOCKS5:     127.0.0.1:${MICROSOCKS_PORT:-1080}"
+            local _socks_port="${SOCKS_PORT:-}"
+            [ -z "$_socks_port" ] && _socks_port=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d: -f1 | cut -d, -f1)
+            echo -e "  SOCKS5:     127.0.0.1:${_socks_port}"
         fi
     else
         echo -e "  Interface:  ${INTERFACE}"
@@ -3426,24 +3351,24 @@ health_check() {
     local issues=0
 
     if [ "$BACKEND" = "gfw-knocker" ]; then
-        # 1. Python scripts exist
-        if [ -f "$GFK_DIR/mainserver.py" ] && [ -f "$GFK_DIR/mainclient.py" ]; then
-            echo -e "  ${GREEN}✓${NC} GFW-knocker scripts found"
+        # 1. Go binaries exist
+        if [ -f "$INSTALL_DIR/bin/gfk-server" ] && [ -f "$INSTALL_DIR/bin/gfk-client" ]; then
+            echo -e "  ${GREEN}✓${NC} GFW-knocker binaries found"
         else
-            echo -e "  ${RED}✗${NC} GFW-knocker scripts missing from $GFK_DIR"
+            echo -e "  ${RED}✗${NC} GFW-knocker binaries missing from $INSTALL_DIR/bin"
             issues=$((issues + 1))
         fi
 
-        # 2. Python + deps (check venv)
-        if [ -x "$INSTALL_DIR/venv/bin/python" ] && "$INSTALL_DIR/venv/bin/python" -c "import scapy; import aioquic" 2>/dev/null; then
-            echo -e "  ${GREEN}✓${NC} Python dependencies OK (scapy, aioquic)"
+        # 2. Go toolchain
+        if command -v go &>/dev/null; then
+            echo -e "  ${GREEN}✓${NC} Go toolchain installed"
         else
-            echo -e "  ${RED}✗${NC} Python dependencies missing (venv not setup)"
+            echo -e "  ${RED}✗${NC} Go toolchain missing"
             issues=$((issues + 1))
         fi
 
         # 3. Config
-        if [ -f "$GFK_DIR/parameters.py" ]; then
+        if [ -f "$GFK_DIR/gfk.json" ]; then
             echo -e "  ${GREEN}✓${NC} GFK configuration found"
         else
             echo -e "  ${RED}✗${NC} GFK configuration missing"
@@ -3487,18 +3412,14 @@ health_check() {
             fi
         fi
 
-        # 7. microsocks (client)
+        # 7. Client local proxy port (first mapping)
         if [ "$ROLE" = "client" ]; then
-            if [ -x "$INSTALL_DIR/bin/microsocks" ]; then
-                echo -e "  ${GREEN}✓${NC} microsocks binary found"
-            else
-                echo -e "  ${RED}✗${NC} microsocks binary missing"
-                issues=$((issues + 1))
-            fi
-            if is_running && ss -tlnp 2>/dev/null | grep -q ":${MICROSOCKS_PORT:-1080}"; then
-                echo -e "  ${GREEN}✓${NC} SOCKS5 port ${MICROSOCKS_PORT:-1080} is listening"
+            local _lport
+            _lport=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d: -f1 | cut -d, -f1)
+            if is_running && ss -tlnp 2>/dev/null | grep -q ":${_lport}"; then
+                echo -e "  ${GREEN}✓${NC} Local proxy port ${_lport} is listening"
             elif is_running; then
-                echo -e "  ${RED}✗${NC} SOCKS5 port ${MICROSOCKS_PORT:-1080} not listening"
+                echo -e "  ${RED}✗${NC} Local proxy port ${_lport} not listening"
                 issues=$((issues + 1))
             fi
         fi
@@ -3620,31 +3541,27 @@ update_gfk() {
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
     echo ""
 
-    log_info "Downloading latest GFW-knocker scripts..."
+    log_info "Updating GFW-knocker..."
+    local updated=false
+
+    if download_gfk_binaries; then
+        updated=true
+    fi
+
+    log_info "Downloading latest GFW-knocker (Go) sources..."
     local tmp_dir
     tmp_dir=$(mktemp -d)
-    local server_files="mainserver.py quic_server.py vio_server.py"
-    local client_files="mainclient.py quic_client.py vio_client.py"
+    local go_files="go.mod cmd/gfk-client/main.go cmd/gfk-server/main.go internal/config/config.go internal/gfk/protocol.go internal/gfk/util.go internal/gfk/sender_unix.go internal/gfk/sender_windows.go internal/gfk/vio.go internal/gfk/quic.go"
     local f changed=false
-    # Download server scripts
-    for f in $server_files; do
-        if ! curl -sL "$GFK_RAW_URL/server/$f" -o "$tmp_dir/$f"; then
+    for f in $go_files; do
+        local dest="$tmp_dir/$f"
+        mkdir -p "$(dirname "$dest")"
+        if ! curl -sL "$GFK_RAW_URL/go/$f" -o "$dest"; then
             log_error "Failed to download $f"
             rm -rf "$tmp_dir"
             return 1
         fi
-        if ! diff -q "$tmp_dir/$f" "$GFK_DIR/$f" &>/dev/null; then
-            changed=true
-        fi
-    done
-    # Download client scripts
-    for f in $client_files; do
-        if ! curl -sL "$GFK_RAW_URL/client/$f" -o "$tmp_dir/$f"; then
-            log_error "Failed to download $f"
-            rm -rf "$tmp_dir"
-            return 1
-        fi
-        if ! diff -q "$tmp_dir/$f" "$GFK_DIR/$f" &>/dev/null; then
+        if ! diff -q "$tmp_dir/$f" "$GFK_DIR/go/$f" &>/dev/null; then
             changed=true
         fi
     done
@@ -3654,28 +3571,27 @@ update_gfk() {
         is_running && was_running=true
         [ "$was_running" = true ] && stop_paqet
 
-        # Backup old scripts
+        # Backup old sources
         mkdir -p "$BACKUP_DIR"
-        local all_files="$server_files $client_files"
-        for f in $all_files; do
-            [ -f "$GFK_DIR/$f" ] && cp "$GFK_DIR/$f" "$BACKUP_DIR/${f}.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+        for f in $go_files; do
+            [ -f "$GFK_DIR/go/$f" ] && cp "$GFK_DIR/go/$f" "$BACKUP_DIR/$(basename "$f").$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
         done
 
-        for f in $all_files; do
-            cp "$tmp_dir/$f" "$GFK_DIR/$f"
+        for f in $go_files; do
+            local dest="$GFK_DIR/go/$f"
+            mkdir -p "$(dirname "$dest")"
+            cp "$tmp_dir/$f" "$dest"
         done
-        chmod 600 "$GFK_DIR"/*.py
-        # Patch mainserver.py to use venv python for subprocesses
-        [ -f "$GFK_DIR/mainserver.py" ] && sed -i "s|'python3'|'$INSTALL_DIR/venv/bin/python'|g" "$GFK_DIR/mainserver.py"
-        log_success "GFW-knocker scripts updated"
 
-        # Also upgrade Python deps in venv
-        "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade scapy aioquic 2>/dev/null || true
+        if ! download_gfk_binaries; then
+            install_go || return 1
+            build_gfk_go || return 1
+        fi
+        log_success "GFW-knocker sources updated"
 
         [ "$was_running" = true ] && start_paqet
     else
-        log_success "GFW-knocker scripts are already up to date"
-        "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade scapy aioquic 2>/dev/null || true
+        log_success "GFW-knocker sources are already up to date"
     fi
     rm -rf "$tmp_dir"
 
@@ -4227,16 +4143,10 @@ _change_config_gfk() {
         fi
         [ -n "$input" ] && GFK_TCP_FLAGS="$input"
 
-        echo -e "${BOLD}SOCKS5 port${NC} [${MICROSOCKS_PORT:-1080}]:"
-        read -p "  Port: " input < /dev/tty || true
-        if [ -n "$input" ] && ! _validate_port "$input"; then
-            log_error "Invalid port number"; return 1
-        fi
-        [ -n "$input" ] && MICROSOCKS_PORT="$input"
-        SOCKS_PORT="${MICROSOCKS_PORT:-1080}"
+        SOCKS_PORT=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d: -f1 | cut -d, -f1)
     fi
 
-    # Regenerate parameters.py
+    # Regenerate gfk.json
     generate_gfk_config || { [ "$was_running" = true ] && start_paqet; return 1; }
 
     # Regenerate wrapper if client
@@ -4263,7 +4173,7 @@ change_config() {
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${NC}"
     echo ""
     local _warn_text="config"
-    [ "$BACKEND" = "gfw-knocker" ] && _warn_text="parameters.py"
+    [ "$BACKEND" = "gfw-knocker" ] && _warn_text="gfk.json"
     echo -e "  ${YELLOW}Warning: This will regenerate ${_warn_text} and restart ${BACKEND}.${NC}"
     echo ""
     read -p "  Continue? [y/N]: " confirm < /dev/tty || true
@@ -4755,7 +4665,7 @@ telegram_build_report() {
     # CPU/RAM
     local pid
     if [ "$BACKEND" = "gfw-knocker" ]; then
-        pid=$(pgrep -f "mainserver.py|mainclient.py" 2>/dev/null | head -1)
+        pid=$(pgrep -f "gfk-server|gfk-client" 2>/dev/null | head -1)
     else
         pid=$(pgrep -f "paqet run -c" 2>/dev/null | head -1)
     fi
@@ -4923,7 +4833,7 @@ send_message() {
 
 is_running() {
     if [ "$BACKEND" = "gfw-knocker" ]; then
-        pgrep -f "mainserver.py|mainclient.py|gfk-client.sh" &>/dev/null
+        pgrep -f "gfk-server|gfk-client|gfk-client.sh" &>/dev/null
     else
         pgrep -f "paqet run -c" &>/dev/null
     fi
@@ -4931,7 +4841,7 @@ is_running() {
 
 get_main_pid() {
     if [ "$BACKEND" = "gfw-knocker" ]; then
-        pgrep -f "mainserver.py" 2>/dev/null | head -1
+        pgrep -f "gfk-server" 2>/dev/null | head -1
     else
         pgrep -f "paqet run -c" 2>/dev/null | head -1
     fi
@@ -5320,9 +5230,9 @@ switch_backend() {
     local other_installed=false
     if [ "$new_backend" = "gfw-knocker" ]; then
         if [ "$ROLE" = "server" ]; then
-            [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_server.py" ] && other_installed=true
+            [ -f "$INSTALL_DIR/bin/gfk-server" ] && other_installed=true
         else
-            [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_client.py" ] && other_installed=true
+            [ -f "$INSTALL_DIR/bin/gfk-client" ] && other_installed=true
         fi
     else
         [ -f "$INSTALL_DIR/bin/paqet" ] && other_installed=true
@@ -5377,9 +5287,9 @@ install_additional_backend() {
     local already_installed=false
     if [ "$new_backend" = "gfw-knocker" ]; then
         if [ "$ROLE" = "server" ]; then
-            [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_server.py" ] && already_installed=true
+            [ -f "$INSTALL_DIR/bin/gfk-server" ] && already_installed=true
         else
-            [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_client.py" ] && already_installed=true
+            [ -f "$INSTALL_DIR/bin/gfk-client" ] && already_installed=true
         fi
     else
         [ -f "$INSTALL_DIR/bin/paqet" ] && already_installed=true
@@ -5745,16 +5655,17 @@ _install_gfk_components() {
     # Save settings with server IP and auth code
     save_settings
 
-    # Install Python dependencies (venv + scapy + aioquic)
-    install_python_deps || return 1
-
-    # Download GFK scripts (server and client)
-    download_gfk || return 1
+    # Prefer prebuilt binaries; fallback to source build
+    if ! download_gfk_binaries; then
+        install_go || return 1
+        download_gfk || return 1
+        build_gfk_go || return 1
+    fi
 
     # Generate TLS certificates for QUIC
     generate_gfk_certs || return 1
 
-    # Generate parameters.py config
+    # Generate gfk.json config
     generate_gfk_config || return 1
 
     # Setup Xray (install, configure, start)
@@ -5773,8 +5684,7 @@ uninstall_paqctl() {
     echo ""
     echo -e "  This will remove:"
     if [ "$BACKEND" = "gfw-knocker" ]; then
-        echo "  - GFW-knocker scripts and config"
-        echo "  - microsocks binary"
+        echo "  - GFW-knocker binaries and config"
     else
         echo "  - paqet binary"
     fi
@@ -5877,8 +5787,8 @@ show_version() {
     echo -e "  paqctl version:  ${BOLD}${VERSION}${NC}"
     if [ "$BACKEND" = "gfw-knocker" ]; then
         echo -e "  backend:         ${BOLD}gfw-knocker${NC}"
-        local py_ver; py_ver=$(python3 --version 2>/dev/null || echo "unknown")
-        echo -e "  python:          ${BOLD}${py_ver}${NC}"
+        local go_ver; go_ver=$(go version 2>/dev/null || echo "unknown")
+        echo -e "  go:              ${BOLD}${go_ver}${NC}"
     else
         echo -e "  paqet version:   ${BOLD}${PAQET_VERSION}${NC}"
         local bin_ver
@@ -6278,9 +6188,9 @@ show_connection_info() {
     local gfk_installed=false
     [ -f "$INSTALL_DIR/bin/paqet" ] && paqet_installed=true
     if [ "$ROLE" = "server" ]; then
-        [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_server.py" ] && gfk_installed=true
+        [ -f "$INSTALL_DIR/bin/gfk-server" ] && gfk_installed=true
     else
-        [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_client.py" ] && gfk_installed=true
+        [ -f "$INSTALL_DIR/bin/gfk-client" ] && gfk_installed=true
     fi
 
     if [ "$paqet_installed" = true ]; then
@@ -6358,9 +6268,9 @@ show_menu() {
             gfk_installed=false
             [ -f "$INSTALL_DIR/bin/paqet" ] && paqet_installed=true
             if [ "$ROLE" = "server" ]; then
-                [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_server.py" ] && gfk_installed=true
+                [ -f "$INSTALL_DIR/bin/gfk-server" ] && gfk_installed=true
             else
-                [ -d "$GFK_DIR" ] && [ -f "$GFK_DIR/quic_client.py" ] && gfk_installed=true
+                [ -f "$INSTALL_DIR/bin/gfk-client" ] && gfk_installed=true
             fi
 
             clear
@@ -6648,7 +6558,7 @@ main() {
     print_header
 
     # Check if already installed
-    if [ -f "$INSTALL_DIR/settings.conf" ] && { [ -x "$INSTALL_DIR/bin/paqet" ] || [ -f "$GFK_DIR/mainserver.py" ]; }; then
+    if [ -f "$INSTALL_DIR/settings.conf" ] && { [ -x "$INSTALL_DIR/bin/paqet" ] || [ -f "$INSTALL_DIR/bin/gfk-server" ]; }; then
         _load_settings
         log_info "paqctl is already installed (backend: ${BACKEND:-paqet})."
         echo ""
@@ -6682,14 +6592,16 @@ main() {
     # Step 4: Backend-specific dependencies and download
     log_info "Step 4/7: Setting up ${BACKEND} backend..."
     if [ "$BACKEND" = "gfw-knocker" ]; then
-        install_python_deps || { log_error "Failed to install Python dependencies"; exit 1; }
-        download_gfk || { log_error "Failed to download GFK"; exit 1; }
+        if ! download_gfk_binaries; then
+            install_go || { log_error "Failed to install Go toolchain"; exit 1; }
+            download_gfk || { log_error "Failed to download GFK"; exit 1; }
+            build_gfk_go || { log_error "Failed to build GFK binaries"; exit 1; }
+        fi
         generate_gfk_certs || { log_error "Failed to generate certificates"; exit 1; }
         if [ "$ROLE" = "server" ]; then
             # Install Xray to provide SOCKS5 proxy on the target port
             setup_xray_for_gfk || { log_error "Failed to setup Xray"; exit 1; }
         elif [ "$ROLE" = "client" ]; then
-            install_microsocks || { log_error "Failed to install microsocks"; exit 1; }
             create_gfk_client_wrapper || { log_error "Failed to create client wrapper"; exit 1; }
         fi
         PAQET_VERSION="$GFK_VERSION_PINNED"
@@ -6717,7 +6629,7 @@ main() {
                     iptables -t raw -A PREROUTING -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
                 iptables -t raw -C OUTPUT -p tcp --sport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
                     iptables -t raw -A OUTPUT -p tcp --sport "$_vio_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
-                # Drop incoming TCP on VIO port (scapy sniffer handles it)
+                # Drop incoming TCP on VIO port (raw socket sniffer handles it)
                 iptables -C INPUT -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
                     iptables -A INPUT -p tcp --dport "$_vio_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
                     log_warn "Failed to add VIO INPUT DROP rule"
@@ -6793,10 +6705,12 @@ main() {
             echo -e "${YELLOW}╚═══════════════════════════════════════════════════════════════╝${NC}"
         else
             echo -e "  Server:     ${BOLD}${GFK_SERVER_IP}${NC}"
-            echo -e "  SOCKS5:     ${BOLD}127.0.0.1:${MICROSOCKS_PORT}${NC}"
+            local _socks_port="${SOCKS_PORT:-}"
+            [ -z "$_socks_port" ] && _socks_port=$(echo "${GFK_PORT_MAPPINGS:-14000:443}" | cut -d: -f1 | cut -d, -f1)
+            echo -e "  SOCKS5:     ${BOLD}127.0.0.1:${_socks_port}${NC}"
             echo ""
             echo -e "  ${YELLOW}Test your proxy:${NC}"
-            echo -e "  ${BOLD}  curl --proxy socks5h://127.0.0.1:${MICROSOCKS_PORT} https://httpbin.org/ip${NC}"
+            echo -e "  ${BOLD}  curl --proxy socks5h://127.0.0.1:${_socks_port} https://httpbin.org/ip${NC}"
         fi
     elif [ "$ROLE" = "server" ]; then
         echo -e "  Port:       ${BOLD}${LISTEN_PORT}${NC}"
