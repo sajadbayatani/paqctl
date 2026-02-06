@@ -1247,6 +1247,8 @@ download_gfk_binaries() {
 build_gfk_go() {
     log_info "Building GFW-knocker Go binaries..."
     command -v go &>/dev/null || { log_error "Go not found"; return 1; }
+    # gopacket/pcap requires libpcap headers
+    install_libpcap || { log_error "libpcap not found"; return 1; }
     [ -d "$GFK_DIR/go" ] || { log_error "GFK Go sources not found in $GFK_DIR/go"; return 1; }
     (cd "$GFK_DIR/go" && \
         GOFLAGS="-mod=mod" go mod download && \
