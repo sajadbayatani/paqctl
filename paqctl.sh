@@ -1248,9 +1248,10 @@ build_gfk_go() {
     log_info "Building GFW-knocker Go binaries..."
     command -v go &>/dev/null || { log_error "Go not found"; return 1; }
     [ -d "$GFK_DIR/go" ] || { log_error "GFK Go sources not found in $GFK_DIR/go"; return 1; }
-    (cd "$GFK_DIR/go" && go mod download && \
-        go build -o "$INSTALL_DIR/bin/gfk-server" ./cmd/gfk-server && \
-        go build -o "$INSTALL_DIR/bin/gfk-client" ./cmd/gfk-client) || {
+    (cd "$GFK_DIR/go" && \
+        GOFLAGS="-mod=mod" go mod download && \
+        GOFLAGS="-mod=mod" go build -o "$INSTALL_DIR/bin/gfk-server" ./cmd/gfk-server && \
+        GOFLAGS="-mod=mod" go build -o "$INSTALL_DIR/bin/gfk-client" ./cmd/gfk-client) || {
         log_error "Failed to build GFK binaries"
         return 1
     }
@@ -1458,6 +1459,10 @@ download_gfk() {
             return 1
         fi
     done
+    # go.sum is optional; if missing upstream, it will be generated during build
+    if ! curl -fsSL "$GFK_RAW_URL/go/go.sum" -o "$GFK_DIR/go/go.sum"; then
+        log_warn "go.sum not found upstream; will generate during build"
+    fi
     # Basic sanity check for go.mod to avoid HTML error pages
     if [ -f "$GFK_DIR/go/go.mod" ] && ! head -n 1 "$GFK_DIR/go/go.mod" | grep -q "^module "; then
         log_error "Invalid go.mod downloaded (unexpected content)."
@@ -2394,6 +2399,10 @@ download_gfk() {
         mkdir -p "$(dirname "$dest")"
         curl -fsSL "$GFK_RAW_URL/go/$f" -o "$dest" || { log_error "Failed to download $f"; return 1; }
     done
+    # go.sum is optional; if missing upstream, it will be generated during build
+    if ! curl -fsSL "$GFK_RAW_URL/go/go.sum" -o "$GFK_DIR/go/go.sum"; then
+        log_warn "go.sum not found upstream; will generate during build"
+    fi
     if [ -f "$GFK_DIR/go/go.mod" ] && ! head -n 1 "$GFK_DIR/go/go.mod" | grep -q "^module "; then
         log_error "Invalid go.mod downloaded (unexpected content)."
         rm -f "$GFK_DIR/go/go.mod"
