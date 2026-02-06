@@ -11,59 +11,59 @@ import (
 	"github.com/google/gopacket/pcap"
 )
 
-func parseTCPFlags(flags string) layers.TCPFlag {
+func parseTCPFlags(flags string) TCPFlag {
 	flags = strings.ToUpper(flags)
-	var out layers.TCPFlag
+	var out TCPFlag
 	if strings.Contains(flags, "F") {
-		out |= layers.TCPFlagFin
+		out |= TCPFlagFin
 	}
 	if strings.Contains(flags, "S") {
-		out |= layers.TCPFlagSyn
+		out |= TCPFlagSyn
 	}
 	if strings.Contains(flags, "R") {
-		out |= layers.TCPFlagRst
+		out |= TCPFlagRst
 	}
 	if strings.Contains(flags, "P") {
-		out |= layers.TCPFlagPsh
+		out |= TCPFlagPsh
 	}
 	if strings.Contains(flags, "A") {
-		out |= layers.TCPFlagAck
+		out |= TCPFlagAck
 	}
 	if strings.Contains(flags, "U") {
-		out |= layers.TCPFlagUrg
+		out |= TCPFlagUrg
 	}
 	if strings.Contains(flags, "E") {
-		out |= layers.TCPFlagEce
+		out |= TCPFlagEce
 	}
 	if strings.Contains(flags, "C") {
-		out |= layers.TCPFlagCwr
+		out |= TCPFlagCwr
 	}
 	return out
 }
 
-func flagsMatch(tcp *layers.TCP, required layers.TCPFlag) bool {
-	if required&layers.TCPFlagAck != 0 && !tcp.ACK {
+func flagsMatch(tcp *layers.TCP, required TCPFlag) bool {
+	if required&TCPFlagAck != 0 && !tcp.ACK {
 		return false
 	}
-	if required&layers.TCPFlagPsh != 0 && !tcp.PSH {
+	if required&TCPFlagPsh != 0 && !tcp.PSH {
 		return false
 	}
-	if required&layers.TCPFlagSyn != 0 && !tcp.SYN {
+	if required&TCPFlagSyn != 0 && !tcp.SYN {
 		return false
 	}
-	if required&layers.TCPFlagRst != 0 && !tcp.RST {
+	if required&TCPFlagRst != 0 && !tcp.RST {
 		return false
 	}
-	if required&layers.TCPFlagFin != 0 && !tcp.FIN {
+	if required&TCPFlagFin != 0 && !tcp.FIN {
 		return false
 	}
-	if required&layers.TCPFlagUrg != 0 && !tcp.URG {
+	if required&TCPFlagUrg != 0 && !tcp.URG {
 		return false
 	}
-	if required&layers.TCPFlagEce != 0 && !tcp.ECE {
+	if required&TCPFlagEce != 0 && !tcp.ECE {
 		return false
 	}
-	if required&layers.TCPFlagCwr != 0 && !tcp.CWR {
+	if required&TCPFlagCwr != 0 && !tcp.CWR {
 		return false
 	}
 	return true

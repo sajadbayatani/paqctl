@@ -166,7 +166,7 @@ func RunVIOServer(ctx context.Context, cfg config.Config) error {
 	}
 }
 
-func sniffLoop(ctx context.Context, iface, filter string, requiredFlags layers.TCPFlag, out chan<- vioSniffPacket) {
+func sniffLoop(ctx context.Context, iface, filter string, requiredFlags TCPFlag, out chan<- vioSniffPacket) {
 	handle, err := pcap.OpenLive(iface, 65535, true, pcap.BlockForever)
 	if err != nil {
 		log.Printf("pcap open error: %v", err)

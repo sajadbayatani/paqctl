@@ -13,7 +13,7 @@ import (
 )
 
 type PacketSender interface {
-	SendTCP(srcIP, dstIP net.IP, srcPort, dstPort int, flags layers.TCPFlag, payload []byte) error
+	SendTCP(srcIP, dstIP net.IP, srcPort, dstPort int, flags TCPFlag, payload []byte) error
 	Close() error
 }
 
@@ -34,7 +34,7 @@ func newPacketSender(iface string, localMAC, gatewayMAC net.HardwareAddr) (Packe
 	return &pcapSender{handle: h, localMAC: localMAC, gatewayMAC: gatewayMAC}, nil
 }
 
-func (s *pcapSender) SendTCP(srcIP, dstIP net.IP, srcPort, dstPort int, flags layers.TCPFlag, payload []byte) error {
+func (s *pcapSender) SendTCP(srcIP, dstIP net.IP, srcPort, dstPort int, flags TCPFlag, payload []byte) error {
 	if s.handle == nil {
 		return errors.New("pcap handle not initialized")
 	}
@@ -62,14 +62,14 @@ func (s *pcapSender) SendTCP(srcIP, dstIP net.IP, srcPort, dstPort int, flags la
 		Seq:     0,
 		Ack:     0,
 		Window:  1024,
-		ACK:     flags&layers.TCPFlagAck != 0,
-		PSH:     flags&layers.TCPFlagPsh != 0,
-		SYN:     flags&layers.TCPFlagSyn != 0,
-		RST:     flags&layers.TCPFlagRst != 0,
-		FIN:     flags&layers.TCPFlagFin != 0,
-		URG:     flags&layers.TCPFlagUrg != 0,
-		ECE:     flags&layers.TCPFlagEce != 0,
-		CWR:     flags&layers.TCPFlagCwr != 0,
+		ACK:     flags&TCPFlagAck != 0,
+		PSH:     flags&TCPFlagPsh != 0,
+		SYN:     flags&TCPFlagSyn != 0,
+		RST:     flags&TCPFlagRst != 0,
+		FIN:     flags&TCPFlagFin != 0,
+		URG:     flags&TCPFlagUrg != 0,
+		ECE:     flags&TCPFlagEce != 0,
+		CWR:     flags&TCPFlagCwr != 0,
 		Options: []layers.TCPOption{
 			{OptionType: layers.TCPOptionKindMSS, OptionLength: 4, OptionData: []byte{0x05, 0x00}},
 			{OptionType: layers.TCPOptionKindWindowScale, OptionLength: 3, OptionData: []byte{0x08}},
